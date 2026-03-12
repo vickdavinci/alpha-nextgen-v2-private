@@ -2968,6 +2968,74 @@ class TestRollTrigger:
             reason, _ = result
             assert reason not in (EXIT_IC_ROLL_PUT, EXIT_IC_ROLL_CALL)
 
+    def test_roll_can_fire_during_hold_when_enabled(self):
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2, entry_dte=10)
+        condor.entry_time = "2025-03-05 10:00:00"
+        engine._positions.append(condor)
+
+        with _patch_config(
+            IC_ROLL_ENABLED=True,
+            IC_ROLL_DURING_HOLD=True,
+            IC_ROLL_TRIGGER_MULT=0.75,
+            IC_HOLD_GUARD_ENABLED=True,
+            IC_HOLD_GUARD_DTE_FRACTION=0.5,
+            IC_HOLD_GUARD_MIN_DAYS=1,
+            IC_HOLD_GUARD_MAX_DAYS=5,
+            IC_HOLD_HARD_STOP_CREDIT_MULT=10.0,
+            IC_HOLD_EOD_GATE_ENABLED=False,
+            IC_UNDERLYING_INVALIDATION_PCT=1.0,
+        ):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-100.0,
+                current_dte=9,
+                vix_current=15.0,
+                regime_score=60.0,
+                qqq_price=478.0,
+                current_time=datetime(2025, 3, 5, 11, 0, 0),
+                put_side_pnl=-100.0,
+                call_side_pnl=20.0,
+            )
+
+        assert result is not None
+        reason, _ = result
+        assert reason == EXIT_IC_ROLL_PUT
+        assert condor.is_rolling is True
+
+    def test_hold_guard_blocks_roll_when_roll_during_hold_disabled(self):
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2, entry_dte=10)
+        condor.entry_time = "2025-03-05 10:00:00"
+        engine._positions.append(condor)
+
+        with _patch_config(
+            IC_ROLL_ENABLED=True,
+            IC_ROLL_DURING_HOLD=False,
+            IC_ROLL_TRIGGER_MULT=0.75,
+            IC_HOLD_GUARD_ENABLED=True,
+            IC_HOLD_GUARD_DTE_FRACTION=0.5,
+            IC_HOLD_GUARD_MIN_DAYS=1,
+            IC_HOLD_GUARD_MAX_DAYS=5,
+            IC_HOLD_HARD_STOP_CREDIT_MULT=10.0,
+            IC_HOLD_EOD_GATE_ENABLED=False,
+            IC_UNDERLYING_INVALIDATION_PCT=1.0,
+        ):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-100.0,
+                current_dte=9,
+                vix_current=15.0,
+                regime_score=60.0,
+                qqq_price=478.0,
+                current_time=datetime(2025, 3, 5, 11, 0, 0),
+                put_side_pnl=-100.0,
+                call_side_pnl=20.0,
+            )
+
+        assert result is None
+        assert condor.is_rolling is False
+
     def test_run_exit_cycle_skips_rolling_condors(self):
         """run_exit_cycle should skip condors with is_rolling=True."""
         engine = _make_engine()

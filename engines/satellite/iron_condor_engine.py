@@ -1391,7 +1391,25 @@ class IronCondorEngine:
                         )
                         return self._build_exit(condor, EXIT_IC_EOD_HOLD_GATE, current_time)
 
-                # Layer 3: Profitable bypass — let profit target run
+                # Layer 3: optional rolling during hold
+                if (
+                    bool(getattr(config, "IC_ROLL_DURING_HOLD", False))
+                    and bool(getattr(config, "IC_ROLL_ENABLED", False))
+                    and put_side_pnl is not None
+                    and call_side_pnl is not None
+                ):
+                    roll_result = self._check_roll_trigger(
+                        condor=condor,
+                        put_side_pnl=put_side_pnl,
+                        call_side_pnl=call_side_pnl,
+                        current_time=current_time,
+                        vix_current=vix_current,
+                        qqq_price=qqq_price,
+                    )
+                    if roll_result is not None:
+                        return roll_result
+
+                # Layer 4: Profitable bypass — let profit target run
                 if combined_pnl > 0:
                     pass  # fall through to main cascade
                 else:
