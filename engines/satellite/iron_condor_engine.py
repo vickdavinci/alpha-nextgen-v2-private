@@ -1278,7 +1278,12 @@ class IronCondorEngine:
         if condor.is_closing or condor.is_rolling:
             return None
 
-        credit_100 = condor.net_credit * 100 * condor.num_spreads
+        # V12.37: campaign-aware credit denominator for rolled condors (Gap B)
+        if condor.roll_count > 0 and condor.cumulative_credit > 0:
+            credit_100 = condor.cumulative_credit * 100 * condor.num_spreads
+            combined_pnl = combined_pnl + condor.cumulative_realized_pnl
+        else:
+            credit_100 = condor.net_credit * 100 * condor.num_spreads
         loss_pct_of_credit = (
             (-combined_pnl / credit_100) if (credit_100 > 0 and combined_pnl < 0) else 0.0
         )
