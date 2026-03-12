@@ -14,9 +14,51 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from engines.satellite.options_primitives import OptionContract
+
+
+@dataclass
+class RollRecord:
+    """Records a single roll event within an IC campaign."""
+
+    roll_time: str  # ISO timestamp
+    rolled_side: str  # "PUT" or "CALL"
+    closed_credit: float  # Per-spread credit of closed side at entry
+    realized_pnl: float  # $ realized on the close (from fills)
+    new_short_strike: float
+    new_long_strike: float
+    new_credit: float  # Per-spread credit of replacement
+    new_expiry: str
+    roll_reason: str  # EXIT_IC_ROLL_PUT / EXIT_IC_ROLL_CALL
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "roll_time": self.roll_time,
+            "rolled_side": self.rolled_side,
+            "closed_credit": self.closed_credit,
+            "realized_pnl": self.realized_pnl,
+            "new_short_strike": self.new_short_strike,
+            "new_long_strike": self.new_long_strike,
+            "new_credit": self.new_credit,
+            "new_expiry": self.new_expiry,
+            "roll_reason": self.roll_reason,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RollRecord":
+        return cls(
+            roll_time=data["roll_time"],
+            rolled_side=data["rolled_side"],
+            closed_credit=float(data.get("closed_credit", 0.0)),
+            realized_pnl=float(data.get("realized_pnl", 0.0)),
+            new_short_strike=float(data.get("new_short_strike", 0.0)),
+            new_long_strike=float(data.get("new_long_strike", 0.0)),
+            new_credit=float(data.get("new_credit", 0.0)),
+            new_expiry=data.get("new_expiry", ""),
+            roll_reason=data.get("roll_reason", ""),
+        )
 
 
 @dataclass
@@ -73,6 +115,22 @@ class IronCondorPosition:
     entry_mfe_t1_floor: float = -1.0  # IC_MFE_T1_FLOOR_PCT at entry (-1 = use config)
     entry_mfe_t2_floor: float = -1.0  # IC_MFE_T2_FLOOR_PCT at entry (-1 = use config)
 
+    # ── V12.37: Per-side rolling ──
+    put_side_credit: float = 0.0  # short_put.mid - long_put.mid (per-spread)
+    call_side_credit: float = 0.0  # short_call.mid - long_call.mid (per-spread)
+    put_side_active: bool = True  # False after put side rolled off
+    call_side_active: bool = True  # False after call side rolled off
+    roll_count: int = 0  # Number of rolls applied
+    max_rolls: int = 1  # Cap (v1 hardcoded to 1)
+    cumulative_credit: float = 0.0  # Total credit across original + rolls (per-spread)
+    cumulative_realized_pnl: float = 0.0  # Running realized P&L from closed sides (fills only)
+    roll_history: List[RollRecord] = field(default_factory=list)
+
+    # ── V12.37: Pending roll state machine ──
+    is_rolling: bool = False  # True between side-close fill and replacement fill
+    rolling_side: str = ""  # "PUT" or "CALL"
+    roll_pending_since: Optional[str] = None  # ISO timestamp when roll started
+
     # ── Derived helpers ──
 
     @property
@@ -128,6 +186,19 @@ class IronCondorPosition:
             "entry_mfe_t2_trigger": self.entry_mfe_t2_trigger,
             "entry_mfe_t1_floor": self.entry_mfe_t1_floor,
             "entry_mfe_t2_floor": self.entry_mfe_t2_floor,
+            # V12.37: Rolling fields
+            "put_side_credit": self.put_side_credit,
+            "call_side_credit": self.call_side_credit,
+            "put_side_active": self.put_side_active,
+            "call_side_active": self.call_side_active,
+            "roll_count": self.roll_count,
+            "max_rolls": self.max_rolls,
+            "cumulative_credit": self.cumulative_credit,
+            "cumulative_realized_pnl": self.cumulative_realized_pnl,
+            "roll_history": [r.to_dict() for r in self.roll_history],
+            "is_rolling": self.is_rolling,
+            "rolling_side": self.rolling_side,
+            "roll_pending_since": self.roll_pending_since,
         }
 
     @classmethod
@@ -173,4 +244,17 @@ class IronCondorPosition:
                 if data.get("entry_mfe_t2_floor") is not None
                 else -1.0
             ),
+            # V12.37: Rolling fields
+            put_side_credit=float(data.get("put_side_credit", 0.0) or 0.0),
+            call_side_credit=float(data.get("call_side_credit", 0.0) or 0.0),
+            put_side_active=data.get("put_side_active", True),
+            call_side_active=data.get("call_side_active", True),
+            roll_count=int(data.get("roll_count", 0) or 0),
+            max_rolls=int(data.get("max_rolls", 1) or 1),
+            cumulative_credit=float(data.get("cumulative_credit", 0.0) or 0.0),
+            cumulative_realized_pnl=float(data.get("cumulative_realized_pnl", 0.0) or 0.0),
+            roll_history=[RollRecord.from_dict(r) for r in data.get("roll_history", [])],
+            is_rolling=data.get("is_rolling", False),
+            rolling_side=str(data.get("rolling_side", "") or ""),
+            roll_pending_since=data.get("roll_pending_since"),
         )

@@ -1099,6 +1099,10 @@ class IronCondorEngine:
             entry_cw_tier=cw_tier,
             stop_dw=stop_dw,
             implied_wr_be=implied_wr,
+            # V12.37: Per-side credit for rolling
+            put_side_credit=put_credit,
+            call_side_credit=call_credit,
+            cumulative_credit=net_credit,
             entry_stop_mult=stop_mult,
             entry_mfe_t1_trigger=float(getattr(config, "IC_MFE_T1_TRIGGER", 0.30)),
             entry_mfe_t2_trigger=float(getattr(config, "IC_MFE_T2_TRIGGER", 0.45)),
