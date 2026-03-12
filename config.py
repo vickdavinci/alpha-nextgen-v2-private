@@ -2468,6 +2468,18 @@ IC_MFE_T1_FLOOR_PCT = (
 )
 IC_MFE_T2_FLOOR_PCT = 0.25  # T2 floor: lock 25% of credit captured (unchanged)
 
+# ── IC Per-Side Rolling (V12.37) ──
+# When a tested side hits a loss threshold, close only that side and open a
+# replacement spread further OTM. Converts binary WIN/LOSE into WIN/ROLL→WIN.
+IC_ROLL_ENABLED = True  # Feature flag for rolling
+IC_ROLL_TRIGGER_MULT = 0.75  # Roll when tested side loss >= 0.75× side credit
+IC_ROLL_MAX_PER_CAMPAIGN = 1  # Max rolls per condor campaign (v1: hardcoded to 1)
+IC_ROLL_MIN_CREDIT_RECOVERY_PCT = 0.50  # Replacement must collect >= 50% of original side credit
+IC_ROLL_FURTHER_OTM_MIN_PCT = 0.005  # New short must be >= 0.5% further OTM
+IC_ROLL_SAME_EXPIRY_ONLY = True  # v1: same expiry only, no next-weekly fallback
+IC_ROLL_PENDING_STALE_MINUTES = 10  # Abandon roll if replacement not filled in N min
+IC_ROLL_DURING_HOLD = True  # Allow rolling during hold guard window
+
 # V3.0: Minimum margin percentage to allow options trading
 # Replaces hardcoded $1,000 check in main.py
 OPTIONS_MIN_MARGIN_PCT = 0.02  # 2% of portfolio minimum margin to trade options
