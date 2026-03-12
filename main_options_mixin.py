@@ -1794,7 +1794,10 @@ class MainOptionsMixin:
             return
 
         # ── Reconcile stale closing condors (B2/C2) ──
+        # V12.37: skip is_rolling condors — partial state is intentional during roll
         for condor in list(ic_positions):
+            if condor.is_rolling:
+                continue  # Intentional partial state — not stale
             if not condor.is_closing:
                 continue
             # Check if ANY leg still has live broker holdings
@@ -1895,6 +1898,22 @@ class MainOptionsMixin:
                     pass
             return total
 
+        def _get_side_pnl(condor, side: str) -> float:
+            """Best-effort per-side P&L trigger signal — do not use for accounting."""
+            legs = ("short_put", "long_put") if side == "PUT" else ("short_call", "long_call")
+            total = 0.0
+            for attr in legs:
+                leg = getattr(condor, attr, None)
+                if leg is None:
+                    continue
+                try:
+                    sym = self.Symbol(leg.symbol) if isinstance(leg.symbol, str) else leg.symbol
+                    if self.Portfolio[sym].Invested:
+                        total += self.Portfolio[sym].UnrealizedProfit
+                except Exception:
+                    pass
+            return total
+
         exit_signals = self.options_engine.run_iron_condor_exit_cycle(
             qqq_price=qqq_price,
             vix_current=vix_current,
@@ -1902,6 +1921,7 @@ class MainOptionsMixin:
             current_time=self.Time,
             get_dte_func=_get_dte,
             get_pnl_func=_get_pnl,
+            get_side_pnl_func=_get_side_pnl,
         )
         for sig in exit_signals:
             self.portfolio_router.receive_signal(sig)
@@ -1918,6 +1938,47 @@ class MainOptionsMixin:
                 reason=str(sig.reason or ""),
                 contract_symbol=str(sig.symbol or ""),
             )
+
+        # ── V12.37: Roll follow-up — search replacement for rolling condors ──
+        ic_engine = self.options_engine._iron_condor_engine
+        for condor in list(ic_engine.positions):
+            if not condor.is_rolling:
+                continue
+            roll_signals = ic_engine.run_roll_follow_up(
+                condor=condor,
+                side_is_flat_func=lambda c, s: self._ic_side_is_flat(c, s),
+                chain=self._get_ic_chain(),
+                qqq_price=qqq_price,
+                vix_current=vix_current,
+                current_time=self.Time,
+                effective_portfolio_value=float(self.Portfolio.TotalPortfolioValue),
+            )
+            if roll_signals:
+                for sig in roll_signals:
+                    self.portfolio_router.receive_signal(sig)
+
+    def _ic_side_is_flat(self, condor, side: str) -> bool:
+        """Check if a condor side (PUT or CALL) has no live broker holdings."""
+        legs = ("short_put", "long_put") if side == "PUT" else ("short_call", "long_call")
+        for attr in legs:
+            leg = getattr(condor, attr, None)
+            if leg is None:
+                continue
+            try:
+                sym = self.Symbol(leg.symbol) if isinstance(leg.symbol, str) else leg.symbol
+                if self.Portfolio[sym].Invested:
+                    return False
+            except Exception:
+                pass
+        return True
+
+    def _get_ic_chain(self):
+        """Get current QQQ option chain for IC replacement search."""
+        try:
+            chain = self.OptionChainProvider.GetOptionContractList(self.Symbol("QQQ"), self.Time)
+            return chain
+        except Exception:
+            return None
 
     def _check_spread_exit(self, data: Slice) -> None:
         """

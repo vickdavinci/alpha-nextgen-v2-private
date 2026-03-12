@@ -2213,6 +2213,7 @@ class OptionsEngine:
         current_time: Any,
         get_dte_func: Any,
         get_pnl_func: Any,
+        get_side_pnl_func: Any = None,
     ) -> List["TargetWeight"]:
         """Run IC engine exit cycle on all open IC positions."""
         ic = self._iron_condor_engine
@@ -2225,6 +2226,7 @@ class OptionsEngine:
             current_time=current_time,
             get_dte_func=get_dte_func,
             get_pnl_func=get_pnl_func,
+            get_side_pnl_func=get_side_pnl_func,
         )
 
         # Bridge IC exit results → shared OPTIONS_DIAG_SUMMARY counters
