@@ -130,6 +130,7 @@ class IronCondorPosition:
     is_rolling: bool = False  # True between side-close fill and replacement fill
     rolling_side: str = ""  # "PUT" or "CALL"
     roll_pending_since: Optional[str] = None  # ISO timestamp when roll started
+    roll_trigger_side_pnl_estimate: float = 0.0  # Trigger-time losing-side PnL estimate
 
     # ── Derived helpers ──
 
@@ -199,6 +200,7 @@ class IronCondorPosition:
             "is_rolling": self.is_rolling,
             "rolling_side": self.rolling_side,
             "roll_pending_since": self.roll_pending_since,
+            "roll_trigger_side_pnl_estimate": self.roll_trigger_side_pnl_estimate,
         }
 
     @classmethod
@@ -257,4 +259,7 @@ class IronCondorPosition:
             is_rolling=data.get("is_rolling", False),
             rolling_side=str(data.get("rolling_side", "") or ""),
             roll_pending_since=data.get("roll_pending_since"),
+            roll_trigger_side_pnl_estimate=float(
+                data.get("roll_trigger_side_pnl_estimate", 0.0) or 0.0
+            ),
         )

@@ -3425,7 +3425,8 @@ class MainOrdersMixin:
         # ── IC path: delegate to IC engine (V12.31) ──
         seed = self.options_engine.get_pending_spread_tracker_seed(fill_symbol=symbol_norm)
         ic_side = str(seed.get("ic_side", "") or "").upper() if isinstance(seed, dict) else ""
-        if ic_side in {"PUT_CREDIT", "CALL_CREDIT"}:
+        is_roll_entry = bool(seed.get("is_roll_entry", False)) if isinstance(seed, dict) else False
+        if ic_side in {"PUT_CREDIT", "CALL_CREDIT"} or is_roll_entry:
             result, condor = self.options_engine.handle_ic_leg_fill(
                 symbol_norm, fill_price, fill_qty, str(self.Time), seed
             )
@@ -3444,6 +3445,23 @@ class MainOrdersMixin:
                     order_tag=f"IC:IRON_CONDOR|condor_id={condor.condor_id}",
                     trace_id=condor.condor_id,
                     message=f"credit=${condor.net_credit:.2f} | side={ic_side}",
+                    source="IC_FILL",
+                )
+            elif result == "ROLL_COMPLETE" and condor:
+                self.Log(
+                    f"IC_ROLL_FILLED: condor_id={condor.condor_id} | "
+                    f"roll_count={condor.roll_count} | side_active=PUT:{condor.put_side_active} "
+                    f"CALL:{condor.call_side_active}"
+                )
+                self._record_order_lifecycle_event(
+                    status="IC_ROLL_ENTRY_COMPLETE",
+                    order_id=0,
+                    symbol=symbol_norm,
+                    quantity=fill_qty,
+                    fill_price=fill_price,
+                    order_tag=f"IC:ROLL_ENTRY|condor_id={condor.condor_id}",
+                    trace_id=condor.condor_id,
+                    message=f"roll_count={condor.roll_count}",
                     source="IC_FILL",
                 )
             elif result == "TIMEOUT":
@@ -3476,6 +3494,28 @@ class MainOrdersMixin:
                     fill_price=fill_price,
                     order_tag=f"IC:QTY_MISMATCH|side={ic_side}",
                     message=f"RecoverySignals={int(recovered)}",
+                    source="IC_FILL",
+                )
+            elif result in {"ROLL_TIMEOUT", "ROLL_QTY_MISMATCH"}:
+                abandon_signals = self.options_engine.handle_ic_roll_fill_failure(
+                    condor.condor_id if condor else "", self.Time
+                )
+                if abandon_signals:
+                    self.portfolio_router.receive_signals(abandon_signals)
+                self.Log(
+                    f"IC_ROLL_FILL_RECOVERY: {result} | condor_id="
+                    f"{getattr(condor, 'condor_id', 'UNKNOWN')} | "
+                    f"RecoverySignals={len(abandon_signals)}"
+                )
+                self._record_order_lifecycle_event(
+                    status=result,
+                    order_id=0,
+                    symbol=symbol_norm,
+                    quantity=fill_qty,
+                    fill_price=fill_price,
+                    order_tag=f"IC:{result}|side={ic_side}",
+                    trace_id=getattr(condor, "condor_id", ""),
+                    message=f"RecoverySignals={len(abandon_signals)}",
                     source="IC_FILL",
                 )
             return

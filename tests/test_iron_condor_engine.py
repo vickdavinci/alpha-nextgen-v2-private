@@ -550,7 +550,7 @@ class TestExitTriggers:
         result = engine.check_exit_signals(
             condor=condor,
             combined_pnl=0,
-            current_dte=2,  # <= IC_TIME_EXIT_DTE=3
+            current_dte=1,  # <= IC_TIME_EXIT_DTE=1
             vix_current=18,
             regime_score=68,
             qqq_price=480,
@@ -579,13 +579,13 @@ class TestExitTriggers:
     def test_friday_close_exit(self):
         engine = _make_engine()
         condor = _make_condor()
-        # Friday (weekday=4), DTE < IC_FRIDAY_CLOSE_DTE(3)
-        # Override TIME_EXIT_DTE to 1 so FRIDAY_CLOSE fires first at DTE=2
-        with _patch_config(IC_TIME_EXIT_DTE=1):
+        # Friday (weekday=4), DTE < IC_FRIDAY_CLOSE_DTE(2)
+        # Override TIME_EXIT_DTE to 0 so FRIDAY_CLOSE fires first at DTE=1
+        with _patch_config(IC_TIME_EXIT_DTE=0):
             result = engine.check_exit_signals(
                 condor=condor,
                 combined_pnl=0,
-                current_dte=2,
+                current_dte=1,
                 vix_current=18,
                 regime_score=68,
                 qqq_price=480,
@@ -2012,20 +2012,19 @@ class TestHoldGuard:
         assert reason == EXIT_IC_HARD_STOP_HOLD
 
     def test_hold_guard_eod_gate_fires_during_hold(self):
-        """Loss > 1.5× credit at 15:45+ triggers EOD gate during hold."""
+        """Loss > 0.75× credit at 15:45+ triggers EOD gate during hold."""
         engine = _make_engine()
         condor = _make_condor(net_credit=1.20, num_spreads=2)
-        # credit_100 = 240; EOD gate = 1.5 × 240 = 360
-        # Hold = max(1, min(3, ceil(30 × 0.25))) = 3 days = 4320 min
-        # Check at Mar 2 15:50 = 1 day 4:50 in = 1730 min < 4320 → within hold
+        # credit_100 = 240; EOD gate = 0.75 × 240 = 180
+        # hard stop = 1.25 × 240 = 300, so use a loss between those thresholds
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=-370,  # loss_pct = 370/240 = 1.54× > 1.5×
+            combined_pnl=-200,
             current_dte=8,
             vix_current=18,
             regime_score=68,
             qqq_price=480,
-            current_time=datetime(2025, 3, 2, 15, 50),  # 15:50 = EOD, held > 4h, within hold
+            current_time=datetime(2025, 3, 2, 15, 50),
         )
         assert result is not None
         reason, _ = result
@@ -2042,7 +2041,7 @@ class TestHoldGuard:
         )
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=-370,  # Would trigger EOD gate if min hold met
+            combined_pnl=-200,  # Would trigger EOD gate if min hold met
             current_dte=20,
             vix_current=18,
             regime_score=68,
@@ -2095,29 +2094,32 @@ class TestHoldGuard:
         engine = _make_engine()
         condor = _make_condor(entry_dte=7)
         # Hold = 2 days = 2880 min. Entry: Mar 1 11:00
-        # credit_100 = 240; stop = 1.5× = 360; use pnl=-400 (triggers stop but not hold hard stop 2.0×=480)
+        # credit_100 = 240; stop = 1.0× = 240; use pnl=-250
+        # Raise hold hard-stop above stop so this test isolates the hold window.
         # Day 1 (Mar 2): still within hold → blocked
-        result = engine.check_exit_signals(
-            condor=condor,
-            combined_pnl=-400,  # Would trigger stop (> 360) but not hold hard stop (< 480)
-            current_dte=6,
-            vix_current=18,
-            regime_score=68,
-            qqq_price=480,
-            current_time=datetime(2025, 3, 2, 11, 0),  # 1 day in
-        )
+        with _patch_config(IC_HOLD_HARD_STOP_CREDIT_MULT=2.0):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-250,
+                current_dte=6,
+                vix_current=18,
+                regime_score=68,
+                qqq_price=480,
+                current_time=datetime(2025, 3, 2, 11, 0),  # 1 day in
+            )
         assert result is None
 
         # Day 3 (Mar 4): past hold → cascade fires
-        result = engine.check_exit_signals(
-            condor=condor,
-            combined_pnl=-400,
-            current_dte=4,
-            vix_current=18,
-            regime_score=68,
-            qqq_price=480,
-            current_time=datetime(2025, 3, 4, 11, 0),  # 3 days in, past 2-day hold
-        )
+        with _patch_config(IC_HOLD_HARD_STOP_CREDIT_MULT=2.0):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-250,
+                current_dte=4,
+                vix_current=18,
+                regime_score=68,
+                qqq_price=480,
+                current_time=datetime(2025, 3, 4, 11, 0),  # 3 days in, past 2-day hold
+            )
         assert result is not None
         reason, _ = result
         assert reason == EXIT_IC_STOP_LOSS
@@ -2126,30 +2128,32 @@ class TestHoldGuard:
         """14 DTE entry → hold = max(2, min(4, ceil(14 × 0.20))) = 3 days."""
         engine = _make_engine()
         condor = _make_condor(entry_dte=14)
-        # Hold = 3 days (capped at max). Entry: Mar 1 11:00
-        # credit_100 = 240; stop = 1.5× = 360; use pnl=-400 (below hold hard stop 2.0×=480)
+        # Hold = 2 days (ceil(14 × 0.15) = 3, capped down to 2). Entry: Mar 1 11:00
+        # Use pnl=-250 with elevated hold hard-stop so hold window, not hard stop, is tested.
         # Day 2 (Mar 3): still within 3-day hold → blocked
-        result = engine.check_exit_signals(
-            condor=condor,
-            combined_pnl=-400,
-            current_dte=12,
-            vix_current=18,
-            regime_score=68,
-            qqq_price=480,
-            current_time=datetime(2025, 3, 3, 11, 0),  # 2 days in
-        )
+        with _patch_config(IC_HOLD_HARD_STOP_CREDIT_MULT=2.0):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-250,
+                current_dte=12,
+                vix_current=18,
+                regime_score=68,
+                qqq_price=480,
+                current_time=datetime(2025, 3, 2, 11, 0),  # 1 day in, still within hold
+            )
         assert result is None
 
-        # Day 4 (Mar 5): past 3-day hold → cascade fires
-        result = engine.check_exit_signals(
-            condor=condor,
-            combined_pnl=-400,
-            current_dte=10,
-            vix_current=18,
-            regime_score=68,
-            qqq_price=480,
-            current_time=datetime(2025, 3, 5, 11, 0),  # 4 days in, past 3-day hold
-        )
+        # Day 4 (Mar 5): past 2-day hold → cascade fires
+        with _patch_config(IC_HOLD_HARD_STOP_CREDIT_MULT=2.0):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-250,
+                current_dte=10,
+                vix_current=18,
+                regime_score=68,
+                qqq_price=480,
+                current_time=datetime(2025, 3, 4, 11, 0),  # 3 days in, past 2-day hold
+            )
         assert result is not None
         reason, _ = result
         assert reason == EXIT_IC_STOP_LOSS
@@ -3197,6 +3201,81 @@ class TestRegisterRollFill:
         assert condor.roll_pending_since is None
         assert len(condor.roll_history) == 1
         assert condor.roll_history[0].new_short_strike == 465.0
+
+    def test_handle_leg_fill_completes_roll_replacement(self):
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        condor.is_rolling = True
+        condor.rolling_side = "PUT"
+        condor.roll_pending_since = "2025-03-05 12:00:00"
+        engine._positions.append(condor)
+
+        new_short = _make_contract(465.0, OptionDirection.PUT, bid=0.80, ask=0.90)
+        new_long = _make_contract(461.0, OptionDirection.PUT, bid=0.30, ask=0.40)
+        engine._build_roll_entry_signal(
+            condor=condor,
+            new_short=new_short,
+            new_long=new_long,
+            new_credit=0.50,
+            current_time=datetime(2025, 3, 5, 12, 5, 0),
+        )
+
+        long_seed = engine.get_fill_tracker_seed(fill_symbol=new_long.symbol)
+        assert long_seed is not None
+        assert long_seed["is_roll_entry"] is True
+        assert long_seed["roll_side"] == "PUT"
+        result, _ = engine.handle_leg_fill(
+            engine._norm(new_long.symbol),
+            fill_price=0.35,
+            fill_qty=2,
+            current_time="2025-03-05 12:06:00",
+            seed=long_seed,
+        )
+        assert result == "TRACKED"
+
+        short_seed = engine.get_fill_tracker_seed(fill_symbol=new_short.symbol)
+        assert short_seed is not None
+        result, rolled_condor = engine.handle_leg_fill(
+            engine._norm(new_short.symbol),
+            fill_price=0.85,
+            fill_qty=2,
+            current_time="2025-03-05 12:06:30",
+            seed=short_seed,
+        )
+        assert result == "ROLL_COMPLETE"
+        assert rolled_condor is condor
+        assert condor.roll_count == 1
+        assert condor.short_put.strike == 465.0
+        assert condor.long_put.strike == 461.0
+        assert condor.is_rolling is False
+        assert engine.get_fill_tracker_seed(fill_symbol=new_short.symbol) is None
+
+    def test_roll_fill_tracker_persists_across_restart(self):
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        condor.is_rolling = True
+        condor.rolling_side = "CALL"
+        condor.roll_pending_since = "2025-03-05 12:00:00"
+        engine._positions.append(condor)
+
+        new_short = _make_contract(492.0, OptionDirection.CALL, bid=0.75, ask=0.85)
+        new_long = _make_contract(496.0, OptionDirection.CALL, bid=0.25, ask=0.35)
+        engine._build_roll_entry_signal(
+            condor=condor,
+            new_short=new_short,
+            new_long=new_long,
+            new_credit=0.50,
+            current_time=datetime(2025, 3, 5, 12, 5, 0),
+        )
+
+        restored = _make_engine()
+        restored.from_dict(engine.to_dict())
+        seed = restored.get_fill_tracker_seed(fill_symbol=new_short.symbol)
+        assert seed is not None
+        assert seed["is_roll_entry"] is True
+        assert seed["roll_side"] == "CALL"
+        assert seed["roll_new_short"]["strike"] == 492.0
+        assert seed["roll_new_long"]["strike"] == 496.0
 
 
 class TestAbandonRoll:

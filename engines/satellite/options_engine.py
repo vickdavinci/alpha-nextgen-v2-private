@@ -2270,6 +2270,10 @@ class OptionsEngine:
             symbol_norm, fill_price, fill_qty, current_time, seed
         )
 
+    def handle_ic_roll_fill_failure(self, condor_id: str, current_time) -> List[Any]:
+        """Delegate roll replacement fill failure handling to IC engine."""
+        return self._iron_condor_engine.handle_roll_fill_failure(condor_id, current_time)
+
     def handle_ic_rejection(self, symbol_norm: str) -> bool:
         """Delegate IC rejection check to IC engine."""
         return self._iron_condor_engine.handle_rejection(symbol_norm)
@@ -4852,6 +4856,10 @@ class OptionsEngine:
             for side_key, seed in ic_seeds.items():
                 seed["ic_side"] = side_key
                 return seed
+
+        ic_tracker_seed = self._iron_condor_engine.get_fill_tracker_seed(fill_symbol=fill_symbol)
+        if ic_tracker_seed:
+            return ic_tracker_seed
 
         return None
 
