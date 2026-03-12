@@ -26,7 +26,7 @@ import pytest
 sys.path.insert(0, ".")
 
 import config
-from engines.satellite.condor_models import IronCondorPosition
+from engines.satellite.condor_models import IronCondorPosition, RollRecord
 from engines.satellite.iron_condor_engine import (
     EXIT_IC_EOD_HOLD_GATE,
     EXIT_IC_FRIDAY_CLOSE,
@@ -34,6 +34,8 @@ from engines.satellite.iron_condor_engine import (
     EXIT_IC_MFE_LOCK,
     EXIT_IC_PROFIT_TARGET,
     EXIT_IC_REGIME_BREAK,
+    EXIT_IC_ROLL_CALL,
+    EXIT_IC_ROLL_PUT,
     EXIT_IC_STOP_LOSS,
     EXIT_IC_TIME_EXIT,
     EXIT_IC_VIX_SPIKE,
@@ -49,6 +51,7 @@ from engines.satellite.iron_condor_engine import (
     R_IC_REGIME_NOT_PERSISTENT,
     R_IC_REGIME_OUT_OF_RANGE,
     R_IC_REJECTION_COOLDOWN,
+    R_IC_ROLL_NO_REPLACEMENT,
     R_IC_STOP_DW_UNFEASIBLE,
     R_IC_STRIKE_REUSE,
     R_IC_TRANSITION_BLOCK,
@@ -2790,3 +2793,454 @@ class TestRejectionCooldown:
         assert engine2._rejection_streak_count == 1
         assert engine2._rejection_cooldown_until is not None
         assert engine2._rejection_streak_first_at is not None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# V12.37: Rolling tests
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _make_condor_with_side_credits(**kwargs) -> IronCondorPosition:
+    """Make condor with per-side credits populated (V12.37)."""
+    condor = _make_condor(**kwargs)
+    # Default: symmetric credit split
+    condor.put_side_credit = condor.net_credit / 2
+    condor.call_side_credit = condor.net_credit / 2
+    condor.cumulative_credit = condor.net_credit
+    return condor
+
+
+class TestRollTrigger:
+    """Test the P2C roll trigger in the exit cascade."""
+
+    def test_roll_trigger_fires_on_tested_put_side(self):
+        """Roll fires when put side loss >= trigger_mult * put_side_credit."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        engine._positions.append(condor)
+        t = datetime(2025, 3, 5, 12, 0, 0)
+
+        # put_side_credit = 0.60, $ = 0.60 * 100 * 2 = $120
+        # trigger at 0.75 * $120 = $90 loss
+        with _patch_config(
+            IC_ROLL_ENABLED=True,
+            IC_ROLL_TRIGGER_MULT=0.75,
+            IC_ROLL_MAX_PER_CAMPAIGN=1,
+            IC_HOLD_GUARD_ENABLED=False,
+        ):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-100.0,
+                current_dte=10,
+                vix_current=18.0,
+                regime_score=55.0,
+                qqq_price=480.0,
+                current_time=t,
+                put_side_pnl=-95.0,  # Above $90 threshold
+                call_side_pnl=-5.0,
+            )
+        assert result is not None
+        reason, signals = result
+        assert reason == EXIT_IC_ROLL_PUT
+        assert len(signals) == 1  # Only PUT side close
+        assert condor.is_rolling is True
+        assert condor.rolling_side == "PUT"
+        assert condor.is_closing is False  # Condor stays alive
+
+    def test_roll_trigger_fires_on_tested_call_side(self):
+        """Roll fires when call side loss >= trigger_mult * call_side_credit."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        engine._positions.append(condor)
+        t = datetime(2025, 3, 5, 12, 0, 0)
+
+        with _patch_config(
+            IC_ROLL_ENABLED=True,
+            IC_ROLL_TRIGGER_MULT=0.75,
+            IC_ROLL_MAX_PER_CAMPAIGN=1,
+            IC_HOLD_GUARD_ENABLED=False,
+        ):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-100.0,
+                current_dte=10,
+                vix_current=18.0,
+                regime_score=55.0,
+                qqq_price=480.0,
+                current_time=t,
+                put_side_pnl=-5.0,
+                call_side_pnl=-95.0,  # Above threshold
+            )
+        assert result is not None
+        reason, _ = result
+        assert reason == EXIT_IC_ROLL_CALL
+        assert condor.rolling_side == "CALL"
+
+    def test_roll_blocked_when_disabled(self):
+        """Roll does not fire when IC_ROLL_ENABLED=False."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        engine._positions.append(condor)
+        t = datetime(2025, 3, 5, 12, 0, 0)
+
+        with _patch_config(
+            IC_ROLL_ENABLED=False,
+            IC_HOLD_GUARD_ENABLED=False,
+            IC_STOP_LOSS_MULTIPLE=2.0,
+        ):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-100.0,
+                current_dte=10,
+                vix_current=18.0,
+                regime_score=55.0,
+                qqq_price=480.0,
+                current_time=t,
+                put_side_pnl=-95.0,
+                call_side_pnl=-5.0,
+            )
+        # Should not trigger roll — falls through to stop or returns None
+        if result:
+            reason, _ = result
+            assert reason != EXIT_IC_ROLL_PUT
+
+    def test_roll_blocked_at_max_rolls(self):
+        """Roll does not fire if roll_count >= max_rolls."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        condor.roll_count = 1
+        condor.max_rolls = 1
+        engine._positions.append(condor)
+        t = datetime(2025, 3, 5, 12, 0, 0)
+
+        with _patch_config(
+            IC_ROLL_ENABLED=True,
+            IC_ROLL_TRIGGER_MULT=0.75,
+            IC_HOLD_GUARD_ENABLED=False,
+            IC_STOP_LOSS_MULTIPLE=2.0,
+        ):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-100.0,
+                current_dte=10,
+                vix_current=18.0,
+                regime_score=55.0,
+                qqq_price=480.0,
+                current_time=t,
+                put_side_pnl=-95.0,
+                call_side_pnl=-5.0,
+            )
+        if result:
+            reason, _ = result
+            assert reason != EXIT_IC_ROLL_PUT
+
+    def test_roll_below_threshold_no_trigger(self):
+        """Roll does not fire if side loss is below threshold."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        engine._positions.append(condor)
+        t = datetime(2025, 3, 5, 12, 0, 0)
+
+        with _patch_config(
+            IC_ROLL_ENABLED=True,
+            IC_ROLL_TRIGGER_MULT=0.75,
+            IC_ROLL_MAX_PER_CAMPAIGN=1,
+            IC_HOLD_GUARD_ENABLED=False,
+            IC_STOP_LOSS_MULTIPLE=2.0,
+        ):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-50.0,
+                current_dte=10,
+                vix_current=18.0,
+                regime_score=55.0,
+                qqq_price=480.0,
+                current_time=t,
+                put_side_pnl=-50.0,  # $50 < $90 threshold
+                call_side_pnl=0.0,
+            )
+        # Should not trigger roll
+        if result:
+            reason, _ = result
+            assert reason not in (EXIT_IC_ROLL_PUT, EXIT_IC_ROLL_CALL)
+
+    def test_run_exit_cycle_skips_rolling_condors(self):
+        """run_exit_cycle should skip condors with is_rolling=True."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits()
+        condor.is_rolling = True
+        engine._positions.append(condor)
+        t = datetime(2025, 3, 5, 12, 0, 0)
+
+        with _patch_config(IC_HOLD_GUARD_ENABLED=False):
+            signals = engine.run_exit_cycle(
+                qqq_price=480.0,
+                vix_current=18.0,
+                regime_score=55.0,
+                current_time=t,
+                get_dte_func=lambda _: 10,
+                get_pnl_func=lambda _: -500.0,
+            )
+        assert signals == []  # Skipped
+
+    def test_run_exit_cycle_roll_sets_is_rolling_not_is_closing(self):
+        """run_exit_cycle should set is_rolling (not is_closing) for roll triggers."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        engine._positions.append(condor)
+        t = datetime(2025, 3, 5, 12, 0, 0)
+
+        with _patch_config(
+            IC_ROLL_ENABLED=True,
+            IC_ROLL_TRIGGER_MULT=0.75,
+            IC_ROLL_MAX_PER_CAMPAIGN=1,
+            IC_HOLD_GUARD_ENABLED=False,
+        ):
+            signals = engine.run_exit_cycle(
+                qqq_price=480.0,
+                vix_current=18.0,
+                regime_score=55.0,
+                current_time=t,
+                get_dte_func=lambda _: 10,
+                get_pnl_func=lambda _: -100.0,
+                get_side_pnl_func=lambda c, s: -95.0 if s == "PUT" else -5.0,
+            )
+        assert len(signals) == 1
+        assert condor.is_rolling is True
+        assert condor.is_closing is False
+
+
+class TestRollRecord:
+    """Test RollRecord serialization."""
+
+    def test_roll_record_round_trip(self):
+        rr = RollRecord(
+            roll_time="2025-03-05 12:00:00",
+            rolled_side="PUT",
+            closed_credit=0.60,
+            realized_pnl=-95.0,
+            new_short_strike=465.0,
+            new_long_strike=461.0,
+            new_credit=0.45,
+            new_expiry="2025-03-15",
+            roll_reason="IC_ROLL_PUT",
+        )
+        d = rr.to_dict()
+        rr2 = RollRecord.from_dict(d)
+        assert rr2.rolled_side == "PUT"
+        assert rr2.realized_pnl == -95.0
+        assert rr2.new_short_strike == 465.0
+        assert rr2.new_credit == 0.45
+
+
+class TestCondorRollingFields:
+    """Test IronCondorPosition rolling field persistence."""
+
+    def test_rolling_fields_round_trip(self):
+        condor = _make_condor_with_side_credits()
+        condor.roll_count = 1
+        condor.cumulative_credit = 1.80
+        condor.cumulative_realized_pnl = -90.0
+        condor.is_rolling = True
+        condor.rolling_side = "PUT"
+        condor.roll_pending_since = "2025-03-05 12:00:00"
+        condor.roll_history = [
+            RollRecord(
+                roll_time="2025-03-05 12:00:00",
+                rolled_side="PUT",
+                closed_credit=0.60,
+                realized_pnl=-90.0,
+                new_short_strike=465.0,
+                new_long_strike=461.0,
+                new_credit=0.45,
+                new_expiry="2025-03-15",
+                roll_reason="IC_ROLL_PUT",
+            )
+        ]
+
+        d = condor.to_dict()
+        restored = IronCondorPosition.from_dict(d)
+        assert restored.roll_count == 1
+        assert restored.cumulative_credit == 1.80
+        assert restored.cumulative_realized_pnl == -90.0
+        assert restored.is_rolling is True
+        assert restored.rolling_side == "PUT"
+        assert restored.roll_pending_since == "2025-03-05 12:00:00"
+        assert len(restored.roll_history) == 1
+        assert restored.roll_history[0].new_short_strike == 465.0
+
+    def test_backward_compat_no_rolling_fields(self):
+        """from_dict with no rolling keys should produce valid defaults."""
+        condor = _make_condor()
+        d = condor.to_dict()
+        # Remove all rolling keys
+        for k in [
+            "put_side_credit",
+            "call_side_credit",
+            "put_side_active",
+            "call_side_active",
+            "roll_count",
+            "max_rolls",
+            "cumulative_credit",
+            "cumulative_realized_pnl",
+            "roll_history",
+            "is_rolling",
+            "rolling_side",
+            "roll_pending_since",
+        ]:
+            d.pop(k, None)
+        restored = IronCondorPosition.from_dict(d)
+        assert restored.roll_count == 0
+        assert restored.is_rolling is False
+        assert restored.put_side_active is True
+        assert restored.roll_history == []
+
+
+class TestCampaignPnL:
+    """Test campaign-aware P&L adjustments in exit cascade."""
+
+    def test_campaign_credit_used_for_rolled_condor(self):
+        """After a roll, credit_100 uses cumulative_credit, not net_credit."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        # Simulate completed roll: cumulative includes original + replacement
+        condor.roll_count = 1
+        condor.cumulative_credit = 1.65  # 1.20 original + 0.45 replacement
+        condor.cumulative_realized_pnl = -90.0  # Lost $90 on closed side
+        engine._positions.append(condor)
+        t = datetime(2025, 3, 5, 12, 0, 0)
+
+        # Campaign credit_100 = 1.65 * 100 * 2 = $330
+        # Target at 40% = $132
+        # Combined: unrealized + cum_realized = 132 + (-90) = 42 unrealized needed
+        # But we set combined_pnl to 42 (unrealized), campaign sees 42 + (-90) = -48
+        # That's pnl_pct = -48/330 = -14.5%, not profitable
+        # Set combined to $222 unrealized → campaign = 222 + (-90) = 132 → 40% target hit
+        with _patch_config(
+            IC_HOLD_GUARD_ENABLED=False,
+            IC_TARGET_CAPTURE_PCT=0.40,
+        ):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=222.0,  # unrealized from live legs
+                current_dte=10,
+                vix_current=18.0,
+                regime_score=55.0,
+                qqq_price=480.0,
+                current_time=t,
+            )
+        assert result is not None
+        reason, _ = result
+        assert reason == EXIT_IC_PROFIT_TARGET
+
+    def test_no_campaign_adjustment_for_unrolled_condor(self):
+        """Unrolled condors use net_credit as before."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        # No rolls
+        assert condor.roll_count == 0
+        engine._positions.append(condor)
+        t = datetime(2025, 3, 5, 12, 0, 0)
+
+        # credit_100 = 1.20 * 100 * 2 = $240
+        # Target at 40% = $96
+        with _patch_config(
+            IC_HOLD_GUARD_ENABLED=False,
+            IC_TARGET_CAPTURE_PCT=0.40,
+        ):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=96.0,
+                current_dte=10,
+                vix_current=18.0,
+                regime_score=55.0,
+                qqq_price=480.0,
+                current_time=t,
+            )
+        assert result is not None
+        reason, _ = result
+        assert reason == EXIT_IC_PROFIT_TARGET
+
+
+class TestRegisterRollFill:
+    """Test register_roll_fill updates condor correctly."""
+
+    def test_register_roll_fill_updates_legs_and_accounting(self):
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        condor.is_rolling = True
+        condor.rolling_side = "PUT"
+        condor.roll_pending_since = "2025-03-05 12:00:00"
+        engine._positions.append(condor)
+
+        new_short = _make_contract(465.0, OptionDirection.PUT, bid=0.80, ask=0.90)
+        new_long = _make_contract(461.0, OptionDirection.PUT, bid=0.30, ask=0.40)
+        new_credit = 0.50
+
+        engine.register_roll_fill(
+            condor=condor,
+            new_short=new_short,
+            new_long=new_long,
+            new_credit=new_credit,
+            realized_pnl=-85.0,
+            current_time=datetime(2025, 3, 5, 12, 30, 0),
+        )
+
+        assert condor.roll_count == 1
+        assert condor.short_put.strike == 465.0
+        assert condor.long_put.strike == 461.0
+        assert condor.put_side_credit == 0.50
+        assert condor.cumulative_credit == 1.70  # 1.20 + 0.50
+        assert condor.cumulative_realized_pnl == -85.0
+        assert condor.is_rolling is False
+        assert condor.rolling_side == ""
+        assert condor.roll_pending_since is None
+        assert len(condor.roll_history) == 1
+        assert condor.roll_history[0].new_short_strike == 465.0
+
+
+class TestAbandonRoll:
+    """Test _abandon_roll closes remaining side."""
+
+    def test_abandon_roll_sets_is_closing_and_emits_close(self):
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits()
+        condor.is_rolling = True
+        condor.rolling_side = "PUT"
+        engine._positions.append(condor)
+
+        signals = engine._abandon_roll(condor, datetime(2025, 3, 5, 13, 0, 0))
+
+        assert condor.is_closing is True
+        assert condor.is_rolling is False
+        assert len(signals) == 1  # Close remaining CALL side
+        meta = signals[0].metadata
+        assert meta["roll_side"] == "CALL"
+
+
+class TestBuildSideClose:
+    """Test _build_side_close emits single-side close signals."""
+
+    def test_build_side_close_put(self):
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits()
+        reason, signals = engine._build_side_close(
+            condor, "PUT", EXIT_IC_ROLL_PUT, datetime(2025, 3, 5, 12, 0, 0)
+        )
+        assert reason == EXIT_IC_ROLL_PUT
+        assert len(signals) == 1
+        meta = signals[0].metadata
+        assert meta["spread_side"] == "PUT_CREDIT_CLOSE"
+        assert meta["is_roll_close"] is True
+        assert meta["roll_side"] == "PUT"
+
+    def test_build_side_close_call(self):
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits()
+        reason, signals = engine._build_side_close(
+            condor, "CALL", EXIT_IC_ROLL_CALL, datetime(2025, 3, 5, 12, 0, 0)
+        )
+        assert len(signals) == 1
+        meta = signals[0].metadata
+        assert meta["spread_side"] == "CALL_CREDIT_CLOSE"
+        assert meta["is_roll_close"] is True
