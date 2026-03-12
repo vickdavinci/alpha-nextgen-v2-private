@@ -3670,6 +3670,35 @@ class TestRollReplacementSearch:
         assert replacement_event["gate_name"] == "IC_ROLL_REPLACEMENT"
         assert "side=CALL" in replacement_event["reason"]
 
+    def test_run_roll_follow_up_emits_single_no_replacement_drop(self):
+        lifecycle_events = []
+        engine = IronCondorEngine(
+            log_func=lambda msg, trades_only=False: None,
+            signal_lifecycle_cb=lambda **kwargs: lifecycle_events.append(kwargs),
+        )
+        condor = _make_condor_with_side_credits()
+        condor.is_rolling = True
+        condor.rolling_side = "CALL"
+        condor.roll_pending_since = "2025-03-05 12:00:00"
+        engine._positions.append(condor)
+
+        signals = engine.run_roll_follow_up(
+            condor=condor,
+            side_is_flat_func=lambda c, s: True,
+            chain=object(),
+            qqq_price=480.0,
+            vix_current=15.0,
+            current_time=datetime(2025, 3, 5, 12, 5, 0),
+            effective_portfolio_value=100000.0,
+        )
+
+        assert signals is not None
+        no_replacement = [e for e in lifecycle_events if e["code"] == R_IC_ROLL_NO_REPLACEMENT]
+        assert len(no_replacement) == 1
+        assert no_replacement[0]["event"] == "DROPPED"
+        assert no_replacement[0]["signal_id"] == condor.condor_id
+        assert no_replacement[0]["gate_name"] == "IC_ROLL_REPLACEMENT"
+
 
 class TestBuildSideClose:
     """Test _build_side_close emits single-side close signals."""

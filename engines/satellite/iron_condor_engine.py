@@ -149,10 +149,25 @@ class IronCondorEngine:
                 text = f"IC: {text}"
             self._log_func(text, trades_only)
 
-    def _record_drop(self, code: str) -> None:
+    def _record_drop(
+        self,
+        code: str,
+        *,
+        signal_id: str = "",
+        trace_id: str = "",
+        gate_name: str = "",
+        reason: str = "",
+    ) -> None:
         self._diag_dropped += 1
         self._diag_drop_codes[code] = self._diag_drop_codes.get(code, 0) + 1
-        self._emit_lifecycle("DROPPED", code=code, gate_name=code)
+        self._emit_lifecycle(
+            "DROPPED",
+            signal_id=signal_id,
+            trace_id=trace_id,
+            code=code,
+            gate_name=gate_name or code,
+            reason=reason,
+        )
 
     def _emit_lifecycle(
         self,
@@ -1990,12 +2005,10 @@ class IronCondorEngine:
                 f"{condor.rolling_side} | id={condor.condor_id}",
                 trades_only=True,
             )
-            self._record_drop(R_IC_ROLL_NO_REPLACEMENT)
-            self._emit_lifecycle(
-                "DROPPED",
+            self._record_drop(
+                R_IC_ROLL_NO_REPLACEMENT,
                 signal_id=condor.condor_id,
                 trace_id=condor.condor_id,
-                code=R_IC_ROLL_NO_REPLACEMENT,
                 gate_name="IC_ROLL_REPLACEMENT",
                 reason=f"side={condor.rolling_side}",
             )
