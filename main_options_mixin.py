@@ -1956,6 +1956,22 @@ class MainOptionsMixin:
             if roll_signals:
                 for sig in roll_signals:
                     self.portfolio_router.receive_signal(sig)
+                    _ic_meta = sig.metadata or {}
+                    self._record_signal_lifecycle_event(
+                        engine="IC",
+                        event="GENERATED",
+                        signal_id=str(_ic_meta.get("condor_id", "")),
+                        trace_id=str(_ic_meta.get("trace_id", "")),
+                        direction=str(_ic_meta.get("spread_side", "")),
+                        strategy="IRON_CONDOR",
+                        code=(
+                            f"IC_ROLL_ENTRY_{str(_ic_meta.get('roll_side', '')).upper()}"
+                            if _ic_meta.get("is_roll_entry")
+                            else ""
+                        ),
+                        reason=str(sig.reason or ""),
+                        contract_symbol=str(sig.symbol or ""),
+                    )
 
     def _ic_side_is_flat(self, condor, side: str) -> bool:
         """Check if a condor side (PUT or CALL) has no live broker holdings."""
