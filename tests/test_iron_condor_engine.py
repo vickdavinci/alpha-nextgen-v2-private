@@ -3223,6 +3223,43 @@ class TestCampaignPnL:
 class TestRegisterRollFill:
     """Test register_roll_fill updates condor correctly."""
 
+    def test_handle_leg_fill_completes_roll_close_with_actual_realized_pnl(self):
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        condor.is_rolling = True
+        condor.rolling_side = "PUT"
+        condor.roll_pending_since = "2025-03-05 12:00:00"
+        engine._positions.append(condor)
+
+        _, signals = engine._build_side_close(
+            condor, "PUT", EXIT_IC_ROLL_PUT, datetime(2025, 3, 5, 12, 5, 0)
+        )
+        seed = engine.get_fill_tracker_seed(fill_symbol=signals[0].symbol)
+        assert seed is not None
+        assert seed["is_roll_close"] is True
+
+        result, _ = engine.handle_leg_fill(
+            engine._norm(signals[0].symbol),
+            fill_price=0.20,
+            fill_qty=2,
+            current_time="2025-03-05 12:06:00",
+            seed=seed,
+        )
+        assert result == "TRACKED"
+
+        short_seed = engine.get_fill_tracker_seed(fill_symbol=condor.short_put.symbol)
+        result, closed_condor = engine.handle_leg_fill(
+            engine._norm(condor.short_put.symbol),
+            fill_price=0.95,
+            fill_qty=2,
+            current_time="2025-03-05 12:06:30",
+            seed=short_seed,
+        )
+        assert result == "ROLL_CLOSE_COMPLETE"
+        assert closed_condor is condor
+        assert condor.put_side_active is False
+        assert condor.pending_roll_close_realized_pnl == pytest.approx(-30.0)
+
     def test_register_roll_fill_updates_legs_and_accounting(self):
         engine = _make_engine()
         condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
@@ -3349,6 +3386,37 @@ class TestAbandonRoll:
         assert len(signals) == 1  # Close remaining CALL side
         meta = signals[0].metadata
         assert meta["roll_side"] == "CALL"
+
+    def test_abandon_roll_books_realized_tested_side_pnl(self):
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits()
+        condor.is_rolling = True
+        condor.rolling_side = "CALL"
+        condor.pending_roll_close_realized_pnl = -95.0
+        engine._positions.append(condor)
+
+        engine._abandon_roll(condor, datetime(2025, 3, 5, 13, 0, 0))
+
+        assert condor.cumulative_realized_pnl == pytest.approx(-95.0)
+        assert condor.pending_roll_close_realized_pnl == 0.0
+
+    def test_handle_roll_close_failure_escalates_to_full_close(self):
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits()
+        condor.is_rolling = True
+        condor.rolling_side = "PUT"
+        condor.roll_pending_since = "2025-03-05 12:00:00"
+        engine._positions.append(condor)
+
+        signals = engine.handle_roll_close_failure(condor.condor_id, datetime(2025, 3, 5, 13, 0, 0))
+
+        assert condor.is_rolling is False
+        assert condor.is_closing is True
+        assert len(signals) == 2
+        assert {sig.metadata["spread_side"] for sig in signals} == {
+            "PUT_CREDIT_CLOSE",
+            "CALL_CREDIT_CLOSE",
+        }
 
 
 class TestBuildSideClose:

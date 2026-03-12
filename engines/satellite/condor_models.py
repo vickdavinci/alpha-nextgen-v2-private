@@ -131,6 +131,9 @@ class IronCondorPosition:
     rolling_side: str = ""  # "PUT" or "CALL"
     roll_pending_since: Optional[str] = None  # ISO timestamp when roll started
     roll_trigger_side_pnl_estimate: float = 0.0  # Trigger-time losing-side PnL estimate
+    pending_roll_close_realized_pnl: float = (
+        0.0  # Realized $ from tested-side close, awaiting replacement or campaign close
+    )
 
     # ── Derived helpers ──
 
@@ -201,6 +204,7 @@ class IronCondorPosition:
             "rolling_side": self.rolling_side,
             "roll_pending_since": self.roll_pending_since,
             "roll_trigger_side_pnl_estimate": self.roll_trigger_side_pnl_estimate,
+            "pending_roll_close_realized_pnl": self.pending_roll_close_realized_pnl,
         }
 
     @classmethod
@@ -261,5 +265,8 @@ class IronCondorPosition:
             roll_pending_since=data.get("roll_pending_since"),
             roll_trigger_side_pnl_estimate=float(
                 data.get("roll_trigger_side_pnl_estimate", 0.0) or 0.0
+            ),
+            pending_roll_close_realized_pnl=float(
+                data.get("pending_roll_close_realized_pnl", 0.0) or 0.0
             ),
         )

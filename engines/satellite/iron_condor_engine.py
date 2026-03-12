@@ -1756,6 +1756,24 @@ class IronCondorEngine:
                 requested_quantity=condor.num_spreads,
             )
 
+        tracker_key = self._roll_close_tracker_key(condor.condor_id, side)
+        tracker = SpreadFillTracker(
+            long_leg_symbol=str(signal.symbol),
+            short_leg_symbol=str(meta["spread_short_leg_symbol"]),
+            expected_quantity=int(condor.num_spreads),
+            timeout_minutes=int(getattr(config, "SPREAD_FILL_TIMEOUT_MINUTES", 5)),
+            created_at=timestamp,
+            spread_type=meta.get("spread_type"),
+        )
+        tracker._ic_side = tracker_key
+        tracker._condor_id = condor.condor_id
+        tracker._is_roll_close = True
+        tracker._roll_side = side
+        tracker._roll_close_entry_credit = float(
+            condor.put_side_credit if side == "PUT" else condor.call_side_credit
+        )
+        self._side_fill_trackers[tracker_key] = tracker
+
         return (reason, [signal])
 
     def build_retry_close_signals(
@@ -1900,6 +1918,8 @@ class IronCondorEngine:
         if not condor.is_rolling:
             return None
 
+        if self._find_active_roll_close_tracker(condor.condor_id, condor.rolling_side) is not None:
+            return None
         if self._find_active_roll_tracker(condor.condor_id, condor.rolling_side) is not None:
             return None
 
@@ -1910,12 +1930,20 @@ class IronCondorEngine:
                 roll_start = datetime.strptime(condor.roll_pending_since, "%Y-%m-%d %H:%M:%S")
                 elapsed = (current_time - roll_start).total_seconds() / 60.0
                 if elapsed > stale_minutes:
+                    if side_is_flat_func(condor, condor.rolling_side):
+                        self._log(
+                            f"IC_ROLL_ABANDONED: stale timeout {elapsed:.0f}m > "
+                            f"{stale_minutes:.0f}m | id={condor.condor_id}",
+                            trades_only=True,
+                        )
+                        return self._abandon_roll(condor, current_time)
                     self._log(
-                        f"IC_ROLL_ABANDONED: stale timeout {elapsed:.0f}m > "
-                        f"{stale_minutes:.0f}m | id={condor.condor_id}",
+                        f"IC_ROLL_CLOSE_FAILED: stale timeout {elapsed:.0f}m > "
+                        f"{stale_minutes:.0f}m before tested-side close filled | "
+                        f"id={condor.condor_id}",
                         trades_only=True,
                     )
-                    return self._abandon_roll(condor, current_time)
+                    return self.handle_roll_close_failure(condor.condor_id, current_time)
             except Exception:
                 pass
 
@@ -2117,7 +2145,7 @@ class IronCondorEngine:
         tracker._roll_new_short = new_short.to_dict()
         tracker._roll_new_long = new_long.to_dict()
         tracker._roll_new_credit = float(new_credit)
-        tracker._roll_realized_pnl_estimate = float(condor.roll_trigger_side_pnl_estimate or 0.0)
+        tracker._roll_realized_pnl = float(condor.pending_roll_close_realized_pnl or 0.0)
         self._side_fill_trackers[tracker_key] = tracker
 
         signal = TargetWeight(
@@ -2142,11 +2170,16 @@ class IronCondorEngine:
     ) -> List[TargetWeight]:
         """Abandon roll and close remaining side. Per Gap C: close-on-failure."""
         condor.is_rolling = False
-        condor.rolling_side_cache = condor.rolling_side
         remaining_side = "CALL" if condor.rolling_side == "PUT" else "PUT"
         self._side_fill_trackers.pop(
             self._roll_tracker_key(condor.condor_id, condor.rolling_side), None
         )
+        self._side_fill_trackers.pop(
+            self._roll_close_tracker_key(condor.condor_id, condor.rolling_side), None
+        )
+        if condor.pending_roll_close_realized_pnl:
+            condor.cumulative_realized_pnl += float(condor.pending_roll_close_realized_pnl)
+            condor.pending_roll_close_realized_pnl = 0.0
         condor.rolling_side = ""
         condor.roll_pending_since = None
         condor.roll_trigger_side_pnl_estimate = 0.0
@@ -2163,6 +2196,38 @@ class IronCondorEngine:
         reason = f"IC_ROLL_ABANDON_{remaining_side}"
         _, signals = self._build_side_close(condor, remaining_side, reason, current_time)
         return signals
+
+    def register_roll_close_fill(
+        self,
+        condor: IronCondorPosition,
+        tracker: SpreadFillTracker,
+        current_time: datetime,
+    ) -> float:
+        """Register actual tested-side close fill before replacement search."""
+        side = str(condor.rolling_side or getattr(tracker, "_roll_side", "") or "").upper()
+        entry_credit = float(getattr(tracker, "_roll_close_entry_credit", 0.0) or 0.0)
+        close_debit = float(tracker.short_fill_price or 0.0) - float(tracker.long_fill_price or 0.0)
+        realized_pnl = (entry_credit - close_debit) * 100.0 * int(condor.num_spreads)
+
+        condor.pending_roll_close_realized_pnl = float(realized_pnl)
+        if side == "PUT":
+            condor.put_side_active = False
+        elif side == "CALL":
+            condor.call_side_active = False
+
+        self._log(
+            f"IC_ROLL_CLOSE_FILL: side={side} | realized=${realized_pnl:.0f} | "
+            f"close_debit={close_debit:.2f} | id={condor.condor_id}",
+            trades_only=True,
+        )
+        self._emit_lifecycle(
+            "ROLL_CLOSE_COMPLETE",
+            signal_id=condor.condor_id,
+            trace_id=condor.condor_id,
+            code="IC_ROLL_CLOSE_FILL",
+            reason=f"side={side} | realized=${realized_pnl:.0f}",
+        )
+        return realized_pnl
 
     def register_roll_fill(
         self,
@@ -2212,6 +2277,7 @@ class IronCondorEngine:
         condor.rolling_side = ""
         condor.roll_pending_since = None
         condor.roll_trigger_side_pnl_estimate = 0.0
+        condor.pending_roll_close_realized_pnl = 0.0
 
         # Recalculate max_loss based on new wing widths
         condor.max_loss = (
@@ -2329,6 +2395,10 @@ class IronCondorEngine:
         """Return stable tracker key for a pending roll replacement entry."""
         return f"ROLL_{str(side or '').upper()}_{str(condor_id or '').upper()}"
 
+    def _roll_close_tracker_key(self, condor_id: str, side: str) -> str:
+        """Return stable tracker key for a pending tested-side close fill."""
+        return f"ROLLCLOSE_{str(side or '').upper()}_{str(condor_id or '').upper()}"
+
     def _find_condor(self, condor_id: str) -> Optional[IronCondorPosition]:
         """Return live condor by ID when present."""
         condor_id_norm = str(condor_id or "").strip()
@@ -2343,6 +2413,15 @@ class IronCondorEngine:
         """Return active fill tracker for a pending roll replacement entry."""
         tracker = self._side_fill_trackers.get(self._roll_tracker_key(condor_id, side))
         if tracker is None or not bool(getattr(tracker, "_is_roll_entry", False)):
+            return None
+        return tracker
+
+    def _find_active_roll_close_tracker(
+        self, condor_id: str, side: str
+    ) -> Optional[SpreadFillTracker]:
+        """Return active fill tracker for a pending tested-side roll close."""
+        tracker = self._side_fill_trackers.get(self._roll_close_tracker_key(condor_id, side))
+        if tracker is None or not bool(getattr(tracker, "_is_roll_close", False)):
             return None
         return tracker
 
@@ -2364,12 +2443,14 @@ class IronCondorEngine:
                 "ic_side": str(getattr(tracker, "_ic_side", tracker_key) or tracker_key),
                 "condor_id": str(getattr(tracker, "_condor_id", "") or ""),
                 "is_roll_entry": bool(getattr(tracker, "_is_roll_entry", False)),
+                "is_roll_close": bool(getattr(tracker, "_is_roll_close", False)),
                 "roll_side": str(getattr(tracker, "_roll_side", "") or ""),
                 "roll_new_short": getattr(tracker, "_roll_new_short", None),
                 "roll_new_long": getattr(tracker, "_roll_new_long", None),
                 "roll_new_credit": float(getattr(tracker, "_roll_new_credit", 0.0) or 0.0),
-                "roll_realized_pnl_estimate": float(
-                    getattr(tracker, "_roll_realized_pnl_estimate", 0.0) or 0.0
+                "roll_realized_pnl": float(getattr(tracker, "_roll_realized_pnl", 0.0) or 0.0),
+                "roll_close_entry_credit": float(
+                    getattr(tracker, "_roll_close_entry_credit", 0.0) or 0.0
                 ),
                 "roll_tracker_key": tracker_key,
             }
@@ -2383,6 +2464,34 @@ class IronCondorEngine:
         if condor is None or not condor.is_rolling:
             return []
         return self._abandon_roll(condor, current_time)
+
+    def handle_roll_close_failure(
+        self, condor_id: str, current_time: datetime
+    ) -> List[TargetWeight]:
+        """Escalate a failed tested-side roll close into a full condor close."""
+        condor = self._find_condor(condor_id)
+        if condor is None or not condor.is_rolling:
+            return []
+
+        rolling_side = str(condor.rolling_side or "").upper()
+        self._side_fill_trackers.pop(self._roll_close_tracker_key(condor_id, rolling_side), None)
+        self._side_fill_trackers.pop(self._roll_tracker_key(condor_id, rolling_side), None)
+        condor.is_rolling = False
+        condor.rolling_side = ""
+        condor.roll_pending_since = None
+        condor.roll_trigger_side_pnl_estimate = 0.0
+        condor.pending_roll_close_realized_pnl = 0.0
+        condor.is_closing = True
+
+        self._emit_lifecycle(
+            "ROLL_CLOSE_FAILED",
+            signal_id=condor.condor_id,
+            trace_id=condor.condor_id,
+            code="IC_ROLL_CLOSE_FAILED",
+            reason="tested-side close failed; escalating to full condor close",
+        )
+        _, signals = self._build_exit(condor, "IC_ROLL_CLOSE_FAILURE", current_time)
+        return signals
 
     # ══════════════════════════════════════════════════════════════════════
     # FILL TRACKING (V12.31 — extracted from main_orders_mixin)
@@ -2411,12 +2520,16 @@ class IronCondorEngine:
             ("TIMEOUT", None)        — tracker expired
             ("QTY_MISMATCH", None)   — fill quantities don't match expected
             ("UNKNOWN_SYMBOL", None)  — symbol doesn't match tracker legs
+            ("ROLL_CLOSE_COMPLETE", condor) — tested side close filled and realized P&L booked
+            ("ROLL_CLOSE_TIMEOUT", condor) — tested side close tracker expired
+            ("ROLL_CLOSE_QTY_MISMATCH", condor) — tested side close fill quantities mismatched
             ("ROLL_COMPLETE", condor) — replacement spread filled and roll registered
             ("ROLL_TIMEOUT", condor) — replacement spread tracker expired
             ("ROLL_QTY_MISMATCH", condor) — replacement spread fill quantities mismatched
         """
         ic_side = str(seed.get("ic_side", "") or "").upper()
         is_roll_entry = bool(seed.get("is_roll_entry", False))
+        is_roll_close = bool(seed.get("is_roll_close", False))
         tracker = self._side_fill_trackers.get(ic_side)
 
         if tracker is None:
@@ -2430,6 +2543,11 @@ class IronCondorEngine:
             )
             tracker._ic_side = ic_side
             tracker._condor_id = seed.get("condor_id", "")
+            tracker._is_roll_close = bool(seed.get("is_roll_close", False))
+            tracker._roll_side = str(seed.get("roll_side", "") or "")
+            tracker._roll_close_entry_credit = float(
+                seed.get("roll_close_entry_credit", 0.0) or 0.0
+            )
             self._side_fill_trackers[ic_side] = tracker
             self._log(
                 f"IC: Side fill tracker created | Side={ic_side} | "
@@ -2446,6 +2564,11 @@ class IronCondorEngine:
                 trades_only=True,
             )
             self._side_fill_trackers.pop(ic_side, None)
+            if is_roll_close:
+                return (
+                    "ROLL_CLOSE_TIMEOUT",
+                    self._find_condor(str(seed.get("condor_id", "") or "")),
+                )
             if is_roll_entry:
                 return ("ROLL_TIMEOUT", self._find_condor(str(seed.get("condor_id", "") or "")))
             self.cancel_pending_entry()
@@ -2487,6 +2610,11 @@ class IronCondorEngine:
                     trades_only=True,
                 )
                 self._side_fill_trackers.pop(ic_side, None)
+                if is_roll_close:
+                    return (
+                        "ROLL_CLOSE_QTY_MISMATCH",
+                        self._find_condor(str(seed.get("condor_id", "") or "")),
+                    )
                 if is_roll_entry:
                     return (
                         "ROLL_QTY_MISMATCH",
@@ -2494,6 +2622,19 @@ class IronCondorEngine:
                     )
                 self.cancel_pending_entry()
                 return ("QTY_MISMATCH", None)
+
+            if is_roll_close:
+                condor = self._find_condor(str(seed.get("condor_id", "") or ""))
+                if condor is None:
+                    self._side_fill_trackers.pop(ic_side, None)
+                    return ("ROLL_CLOSE_TIMEOUT", None)
+                self.register_roll_close_fill(
+                    condor=condor,
+                    tracker=tracker,
+                    current_time=datetime.fromisoformat(current_time),
+                )
+                self._side_fill_trackers.pop(ic_side, None)
+                return ("ROLL_CLOSE_COMPLETE", condor)
 
             if is_roll_entry:
                 condor = self._find_condor(str(seed.get("condor_id", "") or ""))
@@ -2511,7 +2652,10 @@ class IronCondorEngine:
                     new_short=new_short,
                     new_long=new_long,
                     new_credit=float(seed.get("roll_new_credit", 0.0) or 0.0),
-                    realized_pnl=float(seed.get("roll_realized_pnl_estimate", 0.0) or 0.0),
+                    realized_pnl=float(
+                        seed.get("roll_realized_pnl", seed.get("roll_realized_pnl_estimate", 0.0))
+                        or 0.0
+                    ),
                     current_time=datetime.fromisoformat(current_time),
                 )
                 self._side_fill_trackers.pop(ic_side, None)
@@ -2778,11 +2922,13 @@ class IronCondorEngine:
                     "ic_side": getattr(t, "_ic_side", side),
                     "condor_id": getattr(t, "_condor_id", ""),
                     "is_roll_entry": bool(getattr(t, "_is_roll_entry", False)),
+                    "is_roll_close": bool(getattr(t, "_is_roll_close", False)),
                     "roll_side": getattr(t, "_roll_side", ""),
                     "roll_new_short": getattr(t, "_roll_new_short", None),
                     "roll_new_long": getattr(t, "_roll_new_long", None),
                     "roll_new_credit": getattr(t, "_roll_new_credit", 0.0),
-                    "roll_realized_pnl_estimate": getattr(t, "_roll_realized_pnl_estimate", 0.0),
+                    "roll_realized_pnl": getattr(t, "_roll_realized_pnl", 0.0),
+                    "roll_close_entry_credit": getattr(t, "_roll_close_entry_credit", 0.0),
                 }
                 for side, t in self._side_fill_trackers.items()
             },
@@ -2879,12 +3025,20 @@ class IronCondorEngine:
                 tracker._ic_side = str(tdata.get("ic_side", side))
                 tracker._condor_id = str(tdata.get("condor_id", ""))
                 tracker._is_roll_entry = bool(tdata.get("is_roll_entry", False))
+                tracker._is_roll_close = bool(tdata.get("is_roll_close", False))
                 tracker._roll_side = str(tdata.get("roll_side", "") or "")
                 tracker._roll_new_short = tdata.get("roll_new_short")
                 tracker._roll_new_long = tdata.get("roll_new_long")
                 tracker._roll_new_credit = float(tdata.get("roll_new_credit", 0.0) or 0.0)
-                tracker._roll_realized_pnl_estimate = float(
-                    tdata.get("roll_realized_pnl_estimate", 0.0) or 0.0
+                tracker._roll_realized_pnl = float(
+                    tdata.get(
+                        "roll_realized_pnl",
+                        tdata.get("roll_realized_pnl_estimate", 0.0),
+                    )
+                    or 0.0
+                )
+                tracker._roll_close_entry_credit = float(
+                    tdata.get("roll_close_entry_credit", 0.0) or 0.0
                 )
                 self._side_fill_trackers[side] = tracker
             except Exception:

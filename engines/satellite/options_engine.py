@@ -2274,6 +2274,10 @@ class OptionsEngine:
         """Delegate roll replacement fill failure handling to IC engine."""
         return self._iron_condor_engine.handle_roll_fill_failure(condor_id, current_time)
 
+    def handle_ic_roll_close_failure(self, condor_id: str, current_time) -> List[Any]:
+        """Delegate tested-side roll close failure handling to IC engine."""
+        return self._iron_condor_engine.handle_roll_close_failure(condor_id, current_time)
+
     def handle_ic_rejection(self, symbol_norm: str) -> bool:
         """Delegate IC rejection check to IC engine."""
         return self._iron_condor_engine.handle_rejection(symbol_norm)

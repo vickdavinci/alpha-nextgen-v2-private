@@ -2999,6 +2999,28 @@ class MainOrdersMixin:
                 getattr(order_event, "Tag", "") or self._get_order_tag(order_event) or ""
             )
             ic_seed = self.options_engine.get_pending_spread_tracker_seed(fill_symbol=symbol_norm)
+            if bool(ic_seed and ic_seed.get("is_roll_close")):
+                close_signals = self.options_engine.handle_ic_roll_close_failure(
+                    str(ic_seed.get("condor_id", "") or ""),
+                    self.Time,
+                )
+                if close_signals:
+                    self.portfolio_router.receive_signals(close_signals)
+                self.Log(
+                    f"IC_ROLL_CLOSE_REJECTION_RECOVERY: {symbol_norm} | "
+                    f"RecoverySignals={len(close_signals)}"
+                )
+                self._record_order_lifecycle_event(
+                    status="IC_ROLL_CLOSE_REJECTED",
+                    order_id=int(getattr(order_event, "OrderId", 0) or 0),
+                    symbol=symbol_norm,
+                    order_tag=_rej_tag,
+                    trace_id=str(ic_seed.get("condor_id", "") or ""),
+                    message=f"RecoverySignals={len(close_signals)} | "
+                    f"{str(getattr(order_event, 'Message', '') or '')}",
+                    source="IC_REJECTION",
+                )
+                return
             if bool(ic_seed and ic_seed.get("is_roll_entry")):
                 abandon_signals = self.options_engine.handle_ic_roll_fill_failure(
                     str(ic_seed.get("condor_id", "") or ""),
@@ -3443,7 +3465,8 @@ class MainOrdersMixin:
         seed = self.options_engine.get_pending_spread_tracker_seed(fill_symbol=symbol_norm)
         ic_side = str(seed.get("ic_side", "") or "").upper() if isinstance(seed, dict) else ""
         is_roll_entry = bool(seed.get("is_roll_entry", False)) if isinstance(seed, dict) else False
-        if ic_side in {"PUT_CREDIT", "CALL_CREDIT"} or is_roll_entry:
+        is_roll_close = bool(seed.get("is_roll_close", False)) if isinstance(seed, dict) else False
+        if ic_side in {"PUT_CREDIT", "CALL_CREDIT"} or is_roll_entry or is_roll_close:
             result, condor = self.options_engine.handle_ic_leg_fill(
                 symbol_norm, fill_price, fill_qty, str(self.Time), seed
             )
@@ -3479,6 +3502,23 @@ class MainOrdersMixin:
                     order_tag=f"IC:ROLL_ENTRY|condor_id={condor.condor_id}",
                     trace_id=condor.condor_id,
                     message=f"roll_count={condor.roll_count}",
+                    source="IC_FILL",
+                )
+            elif result == "ROLL_CLOSE_COMPLETE" and condor:
+                self.Log(
+                    f"IC_ROLL_CLOSE_FILLED: condor_id={condor.condor_id} | "
+                    f"rolling_side={condor.rolling_side} | "
+                    f"pending_realized=${condor.pending_roll_close_realized_pnl:.2f}"
+                )
+                self._record_order_lifecycle_event(
+                    status="IC_ROLL_CLOSE_COMPLETE",
+                    order_id=0,
+                    symbol=symbol_norm,
+                    quantity=fill_qty,
+                    fill_price=fill_price,
+                    order_tag=f"IC:ROLL_CLOSE|condor_id={condor.condor_id}",
+                    trace_id=condor.condor_id,
+                    message=f"pending_realized=${condor.pending_roll_close_realized_pnl:.2f}",
                     source="IC_FILL",
                 )
             elif result == "TIMEOUT":
@@ -3533,6 +3573,28 @@ class MainOrdersMixin:
                     order_tag=f"IC:{result}|side={ic_side}",
                     trace_id=getattr(condor, "condor_id", ""),
                     message=f"RecoverySignals={len(abandon_signals)}",
+                    source="IC_FILL",
+                )
+            elif result in {"ROLL_CLOSE_TIMEOUT", "ROLL_CLOSE_QTY_MISMATCH"}:
+                close_signals = self.options_engine.handle_ic_roll_close_failure(
+                    condor.condor_id if condor else "", self.Time
+                )
+                if close_signals:
+                    self.portfolio_router.receive_signals(close_signals)
+                self.Log(
+                    f"IC_ROLL_CLOSE_RECOVERY: {result} | condor_id="
+                    f"{getattr(condor, 'condor_id', 'UNKNOWN')} | "
+                    f"RecoverySignals={len(close_signals)}"
+                )
+                self._record_order_lifecycle_event(
+                    status=result,
+                    order_id=0,
+                    symbol=symbol_norm,
+                    quantity=fill_qty,
+                    fill_price=fill_price,
+                    order_tag=f"IC:{result}|side={ic_side}",
+                    trace_id=getattr(condor, "condor_id", ""),
+                    message=f"RecoverySignals={len(close_signals)}",
                     source="IC_FILL",
                 )
             return
