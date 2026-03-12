@@ -2995,28 +2995,33 @@ class MainOrdersMixin:
         # Route 3: QQQ options
         elif "QQQ" in symbol and ("C" in symbol or "P" in symbol):
             symbol_norm = self._normalize_symbol_str(symbol)
-            # V12.36: Check if this is an IC entry rejection — inform IC engine
             _rej_tag = str(
                 getattr(order_event, "Tag", "") or self._get_order_tag(order_event) or ""
             )
-            if "IC:" in _rej_tag or "OPT_IC" in _rej_tag:
-                is_bp = "buying power" in str(
-                    getattr(order_event, "Message", "") or ""
-                ).lower() or "Margin" in str(getattr(order_event, "Message", "") or "")
-                self.options_engine.record_ic_entry_rejection(self.Time, is_bp)
-                self.options_engine.cancel_pending_ic_entry()
+            ic_seed = self.options_engine.get_pending_spread_tracker_seed(fill_symbol=symbol_norm)
+            if bool(ic_seed and ic_seed.get("is_roll_entry")):
+                abandon_signals = self.options_engine.handle_ic_roll_fill_failure(
+                    str(ic_seed.get("condor_id", "") or ""),
+                    self.Time,
+                )
+                if abandon_signals:
+                    self.portfolio_router.receive_signals(abandon_signals)
                 self.Log(
-                    f"IC_REJECTION_RECOVERY: {symbol_norm} | " f"BP={is_bp} | Pending entry cleared"
+                    f"IC_ROLL_REJECTION_RECOVERY: {symbol_norm} | "
+                    f"RecoverySignals={len(abandon_signals)}"
                 )
                 self._record_order_lifecycle_event(
-                    status="IC_ENTRY_REJECTED",
+                    status="IC_ROLL_ENTRY_REJECTED",
                     order_id=int(getattr(order_event, "OrderId", 0) or 0),
                     symbol=symbol_norm,
                     order_tag=_rej_tag,
-                    message=f"BP={is_bp} | {str(getattr(order_event, 'Message', '') or '')}",
+                    trace_id=str(ic_seed.get("condor_id", "") or ""),
+                    message=f"RecoverySignals={len(abandon_signals)} | "
+                    f"{str(getattr(order_event, 'Message', '') or '')}",
                     source="IC_REJECTION",
                 )
-            elif self.options_engine.cancel_pending_engine_exit(symbol_norm):
+                return
+            if self.options_engine.cancel_pending_engine_exit(symbol_norm):
                 self._clear_engine_close_guard(symbol_norm)
                 self.Log(
                     f"OPT_MICRO_EXIT_RECOVERY: Close rejected/canceled | "
@@ -3167,6 +3172,18 @@ class MainOrdersMixin:
                         f"RecoverySignals={int(recovered)} | "
                         f"InsufficientBP={_ic_insufficient_bp} | "
                         f"Cooldown={_ic_cooldown}min"
+                    )
+                    self._record_order_lifecycle_event(
+                        status="IC_ENTRY_REJECTED",
+                        order_id=int(getattr(order_event, "OrderId", 0) or 0),
+                        symbol=symbol_norm,
+                        order_tag=_rej_tag,
+                        message=(
+                            f"RecoverySignals={int(recovered)} | "
+                            f"InsufficientBP={_ic_insufficient_bp} | "
+                            f"{str(getattr(order_event, 'Message', '') or '')}"
+                        ),
+                        source="IC_REJECTION",
                     )
                     spread_rejection_handled = True
 
