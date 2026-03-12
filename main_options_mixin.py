@@ -1975,8 +1975,11 @@ class MainOptionsMixin:
     def _get_ic_chain(self):
         """Get current QQQ option chain for IC replacement search."""
         try:
-            chain = self.OptionChainProvider.GetOptionContractList(self.Symbol("QQQ"), self.Time)
-            return chain
+            if self.CurrentSlice is None:
+                return None
+            return self._get_valid_options_chain(
+                self.CurrentSlice.OptionChains, mode_label="IC_ROLL"
+            )
         except Exception:
             return None
 
