@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import config
-from engines.satellite.condor_models import IronCondorPosition
+from engines.satellite.condor_models import IronCondorPosition, RollRecord
 from engines.satellite.options_primitives import OptionContract, SpreadFillTracker
 from models.enums import OptionDirection, Urgency
 from models.target_weight import TargetWeight
@@ -1867,6 +1867,337 @@ class IronCondorEngine:
             )
 
         return signals
+
+    # ══════════════════════════════════════════════════════════════════════
+    # V12.37: ROLL FOLLOW-UP + REPLACEMENT
+    # ══════════════════════════════════════════════════════════════════════
+
+    def run_roll_follow_up(
+        self,
+        *,
+        condor: IronCondorPosition,
+        side_is_flat_func: Callable[[IronCondorPosition, str], bool],
+        chain: Any,
+        qqq_price: float,
+        vix_current: float,
+        current_time: datetime,
+        effective_portfolio_value: float,
+    ) -> Optional[List[TargetWeight]]:
+        """Handle rolling condors after exit cycle.
+
+        Called for each is_rolling condor. Checks if the closed side is flat
+        (fills complete), then searches for a replacement spread.
+
+        Per Gap C: if no replacement found, close remaining side immediately.
+        """
+        if not condor.is_rolling:
+            return None
+
+        # Stale timeout check
+        stale_minutes = float(getattr(config, "IC_ROLL_PENDING_STALE_MINUTES", 10))
+        if condor.roll_pending_since:
+            try:
+                roll_start = datetime.strptime(condor.roll_pending_since, "%Y-%m-%d %H:%M:%S")
+                elapsed = (current_time - roll_start).total_seconds() / 60.0
+                if elapsed > stale_minutes:
+                    self._log(
+                        f"IC_ROLL_ABANDONED: stale timeout {elapsed:.0f}m > "
+                        f"{stale_minutes:.0f}m | id={condor.condor_id}",
+                        trades_only=True,
+                    )
+                    return self._abandon_roll(condor, current_time)
+            except Exception:
+                pass
+
+        # Check if the closed side is flat (fills complete)
+        if not side_is_flat_func(condor, condor.rolling_side):
+            return None  # Still waiting for side-close fills
+
+        # Side is flat — search for replacement
+        self._log(
+            f"IC_ROLL_SIDE_FLAT: {condor.rolling_side} closed | "
+            f"searching replacement | id={condor.condor_id}",
+            trades_only=True,
+        )
+
+        replacement = self._search_replacement(
+            condor=condor,
+            chain=chain,
+            qqq_price=qqq_price,
+            vix_current=vix_current,
+            current_time=current_time,
+        )
+
+        if replacement is None:
+            self._log(
+                f"IC_ROLL_NO_REPLACEMENT: no valid replacement for "
+                f"{condor.rolling_side} | id={condor.condor_id}",
+                trades_only=True,
+            )
+            self._record_drop(R_IC_ROLL_NO_REPLACEMENT)
+            return self._abandon_roll(condor, current_time)
+
+        new_short, new_long, new_credit = replacement
+        self._log(
+            f"IC_ROLL_REPLACEMENT: {condor.rolling_side} | "
+            f"K_short={new_short.strike} K_long={new_long.strike} | "
+            f"credit={new_credit:.2f} | id={condor.condor_id}",
+            trades_only=True,
+        )
+
+        return self._build_roll_entry_signal(condor, new_short, new_long, new_credit, current_time)
+
+    def _search_replacement(
+        self,
+        *,
+        condor: IronCondorPosition,
+        chain: Any,
+        qqq_price: float,
+        vix_current: float,
+        current_time: datetime,
+    ) -> Optional[Tuple[OptionContract, OptionContract, float]]:
+        """Search for a replacement spread for the rolled side.
+
+        Per Gap C: same-expiry only, skip EM/symmetry/daily-limit gates,
+        apply liquidity + min credit recovery + further-OTM + strike reuse.
+        """
+        if chain is None:
+            return None
+
+        side = condor.rolling_side
+        contracts = self._extract_chain_contracts(chain, qqq_price, current_time)
+        if not contracts:
+            return None
+
+        # Get the original expiry and side credit for this side
+        if side == "PUT":
+            orig_expiry = condor.short_put.expiry
+            orig_short_strike = condor.short_put.strike
+            orig_side_credit = condor.put_side_credit
+            direction = OptionDirection.PUT
+        else:
+            orig_expiry = condor.short_call.expiry
+            orig_short_strike = condor.short_call.strike
+            orig_side_credit = condor.call_side_credit
+            direction = OptionDirection.CALL
+
+        # Filter to same expiry, same direction, valid bid/ask
+        min_oi = int(getattr(config, "IC_MIN_OPEN_INTEREST", 100))
+        candidates = [
+            c
+            for c in contracts
+            if c.direction == direction
+            and c.expiry == orig_expiry
+            and c.bid > 0
+            and c.ask > c.bid
+            and c.open_interest >= min_oi
+        ]
+
+        if not candidates:
+            return None
+
+        further_otm_pct = float(getattr(config, "IC_ROLL_FURTHER_OTM_MIN_PCT", 0.005))
+        min_recovery = float(getattr(config, "IC_ROLL_MIN_CREDIT_RECOVERY_PCT", 0.50))
+        min_credit = min_recovery * orig_side_credit
+
+        wing_width = self._get_wing_width_for_vix(vix_current)
+
+        # Collect all active strikes for strike reuse guard
+        active_strikes = set()
+        for pos in self._positions:
+            if pos.is_closing:
+                continue
+            active_strikes.update(
+                {
+                    pos.short_put.strike,
+                    pos.long_put.strike,
+                    pos.short_call.strike,
+                    pos.long_call.strike,
+                }
+            )
+
+        best_result = None
+        best_credit = -1.0
+
+        for short_cand in candidates:
+            # Further OTM constraint
+            if side == "PUT":
+                # New short put must be LOWER than original (further OTM for puts)
+                min_distance = qqq_price * further_otm_pct
+                if short_cand.strike >= orig_short_strike - min_distance:
+                    continue
+            else:
+                # New short call must be HIGHER than original (further OTM for calls)
+                min_distance = qqq_price * further_otm_pct
+                if short_cand.strike <= orig_short_strike + min_distance:
+                    continue
+
+            # Strike reuse guard
+            if short_cand.strike in active_strikes:
+                continue
+
+            # Find the protective wing
+            long_cand = self._find_wing_leg(candidates, short_cand, wing_width, side, tolerance=1)
+            if long_cand is None:
+                continue
+
+            # Calculate credit
+            new_credit = short_cand.mid_price - long_cand.mid_price
+            if new_credit < min_credit:
+                continue
+
+            # Pick highest credit replacement
+            if new_credit > best_credit:
+                best_credit = new_credit
+                best_result = (short_cand, long_cand, new_credit)
+
+        return best_result
+
+    def _build_roll_entry_signal(
+        self,
+        condor: IronCondorPosition,
+        new_short: OptionContract,
+        new_long: OptionContract,
+        new_credit: float,
+        current_time: datetime,
+    ) -> List[TargetWeight]:
+        """Build entry signal for the replacement spread."""
+        timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S")
+        side = condor.rolling_side
+
+        spread_side = "PUT_CREDIT" if side == "PUT" else "CALL_CREDIT"
+        spread_type = "CREDIT_PUT" if side == "PUT" else "CREDIT_CALL"
+        wing_width = abs(new_short.strike - new_long.strike)
+
+        meta = {
+            "options_lane": "IC",
+            "options_strategy": "IRON_CONDOR",
+            "trace_source": f"IC:ROLL_ENTRY_{side}",
+            "trace_id": condor.condor_id,
+            "condor_id": condor.condor_id,
+            "spread_side": spread_side,
+            "spread_type": spread_type,
+            "is_credit_spread": True,
+            "spread_short_leg_symbol": new_short.symbol,
+            "spread_short_leg_quantity": condor.num_spreads,
+            "short_strike": new_short.strike,
+            "long_strike": new_long.strike,
+            "spread_width": wing_width,
+            "spread_cost_or_credit": -new_credit,
+            "transition_overlay": condor.entry_transition_overlay,
+            "is_roll_entry": True,
+            "roll_side": side,
+            "roll_number": condor.roll_count + 1,
+        }
+
+        signal = TargetWeight(
+            symbol=new_long.symbol,
+            target_weight=1.0,
+            source="OPT_IC",
+            urgency=Urgency.IMMEDIATE,
+            reason=(
+                f"IC_ROLL_ENTRY_{side} | K_short={new_short.strike} "
+                f"K_long={new_long.strike} | credit={new_credit:.2f} "
+                f"| roll #{condor.roll_count + 1} | condor_id={condor.condor_id}"
+            ),
+            timestamp=timestamp,
+            metadata=meta,
+            requested_quantity=condor.num_spreads,
+        )
+
+        return [signal]
+
+    def _abandon_roll(
+        self, condor: IronCondorPosition, current_time: datetime
+    ) -> List[TargetWeight]:
+        """Abandon roll and close remaining side. Per Gap C: close-on-failure."""
+        condor.is_rolling = False
+        condor.rolling_side_cache = condor.rolling_side
+        remaining_side = "CALL" if condor.rolling_side == "PUT" else "PUT"
+        condor.rolling_side = ""
+        condor.roll_pending_since = None
+        condor.is_closing = True
+
+        self._emit_lifecycle(
+            "ROLL_ABANDONED",
+            signal_id=condor.condor_id,
+            trace_id=condor.condor_id,
+            code="IC_ROLL_ABANDONED",
+            reason=f"closing remaining {remaining_side} side",
+        )
+
+        reason = f"IC_ROLL_ABANDON_{remaining_side}"
+        _, signals = self._build_side_close(condor, remaining_side, reason, current_time)
+        return signals
+
+    def register_roll_fill(
+        self,
+        condor: IronCondorPosition,
+        new_short: OptionContract,
+        new_long: OptionContract,
+        new_credit: float,
+        realized_pnl: float,
+        current_time: datetime,
+    ) -> None:
+        """Register a completed roll: update condor with replacement legs."""
+        side = condor.rolling_side
+        roll_record = RollRecord(
+            roll_time=current_time.strftime("%Y-%m-%d %H:%M:%S"),
+            rolled_side=side,
+            closed_credit=(condor.put_side_credit if side == "PUT" else condor.call_side_credit),
+            realized_pnl=realized_pnl,
+            new_short_strike=new_short.strike,
+            new_long_strike=new_long.strike,
+            new_credit=new_credit,
+            new_expiry=new_short.expiry,
+            roll_reason=EXIT_IC_ROLL_PUT if side == "PUT" else EXIT_IC_ROLL_CALL,
+        )
+
+        # Update legs
+        if side == "PUT":
+            condor.short_put = new_short
+            condor.long_put = new_long
+            condor.put_side_credit = new_credit
+            condor.put_side_active = True
+            condor.put_wing_width = new_short.strike - new_long.strike
+        else:
+            condor.short_call = new_short
+            condor.long_call = new_long
+            condor.call_side_credit = new_credit
+            condor.call_side_active = True
+            condor.call_wing_width = new_long.strike - new_short.strike
+
+        # Campaign accounting
+        condor.roll_count += 1
+        condor.cumulative_credit += new_credit
+        condor.cumulative_realized_pnl += realized_pnl
+        condor.roll_history.append(roll_record)
+
+        # Clear rolling state
+        condor.is_rolling = False
+        condor.rolling_side = ""
+        condor.roll_pending_since = None
+
+        # Recalculate max_loss based on new wing widths
+        condor.max_loss = (
+            max(condor.put_wing_width, condor.call_wing_width) - condor.cumulative_credit
+        )
+
+        self._log(
+            f"IC_ROLL_ENTRY_FILL: roll #{condor.roll_count} complete | "
+            f"realized=${realized_pnl:.0f} | new_credit={new_credit:.2f} | "
+            f"cum_credit={condor.cumulative_credit:.2f} | "
+            f"id={condor.condor_id}",
+            trades_only=True,
+        )
+
+        self._emit_lifecycle(
+            "ROLL_COMPLETE",
+            signal_id=condor.condor_id,
+            trace_id=condor.condor_id,
+            code="IC_ROLL_ENTRY_FILL",
+            reason=f"roll #{condor.roll_count} | cum_credit={condor.cumulative_credit:.2f}",
+        )
 
     # ══════════════════════════════════════════════════════════════════════
     # POSITION MANAGEMENT
