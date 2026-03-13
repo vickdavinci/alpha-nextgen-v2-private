@@ -4742,6 +4742,62 @@ class TestNeutralityExit:
         assert result is not None
         assert "QQQ_INVALIDATION_CLOSE" in str(result[0].reason)
 
+    def test_bull_debit_qqq_invalidation_undeveloped_trade_exits_earlier(
+        self, engine, long_leg, short_leg, monkeypatch
+    ):
+        """Undeveloped bull debits should use tighter intraday invalidation."""
+        self._make_spread(engine, "BULL_CALL", 2.50, long_leg, short_leg)
+        engine._spread_position.entry_underlying_price = 100.0
+        engine._spread_position.highest_pnl_max_profit_pct = 0.10
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_MFE_DEVELOPED_MIN_PCT", 0.20)
+        monkeypatch.setattr(
+            config,
+            "VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_UNDEVELOPED_PCT",
+            0.025,
+        )
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT", 0.040)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=5.40,
+            short_leg_price=3.00,
+            regime_score=70.0,
+            vix_current=14.0,
+            current_dte=20,
+            underlying_price=97.4,
+        )
+
+        assert result is not None
+        assert "QQQ_INVALIDATION_INTRADAY" in str(result[0].reason)
+
+    def test_bull_debit_qqq_invalidation_developed_trade_keeps_existing_threshold(
+        self, engine, long_leg, short_leg, monkeypatch
+    ):
+        """Developed bull debits should retain the wider invalidation threshold."""
+        self._make_spread(engine, "BULL_CALL", 2.50, long_leg, short_leg)
+        engine._spread_position.entry_underlying_price = 100.0
+        engine._spread_position.highest_pnl_max_profit_pct = 0.25
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_MFE_DEVELOPED_MIN_PCT", 0.20)
+        monkeypatch.setattr(
+            config,
+            "VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_UNDEVELOPED_PCT",
+            0.025,
+        )
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT", 0.040)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=5.40,
+            short_leg_price=3.00,
+            regime_score=70.0,
+            vix_current=14.0,
+            current_dte=20,
+            underlying_price=97.4,
+        )
+
+        assert result is None
+
 
 def test_spread_position_roundtrip_preserves_entry_underlying_price(sample_contract):
     """V12.25: SpreadPosition persistence retains entry underlying anchor."""

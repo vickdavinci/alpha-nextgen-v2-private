@@ -1224,12 +1224,33 @@ def check_spread_exit_signals_impl(
             entry_underlying = float(getattr(spread, "entry_underlying_price", 0.0) or 0.0)
             current_underlying = float(underlying_price or 0.0)
             if entry_underlying > 0 and current_underlying > 0:
-                intraday_pct = float(
-                    getattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT", 0.040)
+                developed_mfe_min_pct = float(
+                    getattr(config, "VASS_BULL_DEBIT_MFE_DEVELOPED_MIN_PCT", 0.20)
                 )
-                close_pct = float(
-                    getattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_PCT", 0.035)
-                )
+                highest_pnl_pct = float(getattr(spread, "highest_pnl_max_profit_pct", 0.0) or 0.0)
+                is_developed_trade = highest_pnl_pct >= developed_mfe_min_pct
+                if is_developed_trade:
+                    intraday_pct = float(
+                        getattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT", 0.040)
+                    )
+                    close_pct = float(
+                        getattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_PCT", 0.035)
+                    )
+                else:
+                    intraday_pct = float(
+                        getattr(
+                            config,
+                            "VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_UNDEVELOPED_PCT",
+                            0.025,
+                        )
+                    )
+                    close_pct = float(
+                        getattr(
+                            config,
+                            "VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_UNDEVELOPED_PCT",
+                            0.0275,
+                        )
+                    )
                 intraday_floor = entry_underlying * (1.0 - max(0.0, intraday_pct))
                 close_floor = entry_underlying * (1.0 - max(0.0, close_pct))
                 if current_underlying <= intraday_floor:
