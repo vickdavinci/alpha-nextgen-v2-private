@@ -2282,6 +2282,12 @@ class IronCondorEngine:
             condor.pending_roll_close_realized_pnl = 0.0
         condor.roll_count += 1
         closed_side = condor.rolling_side
+        # Defensive: ensure side flag is set even if register_roll_close_fill was bypassed
+        # (race condition: fill tracker timeout → fill misrouted → flag never set)
+        if closed_side == "PUT":
+            condor.put_side_active = False
+        elif closed_side == "CALL":
+            condor.call_side_active = False
         condor.rolling_side = ""
         condor.roll_pending_since = None
         condor.roll_trigger_side_pnl_estimate = 0.0
@@ -2293,6 +2299,9 @@ class IronCondorEngine:
             trace_id=condor.condor_id,
             code="IC_ROLL_SIDE_FINALIZED",
             reason=f"closed {closed_side} side | surviving side rides | roll_count={condor.roll_count}",
+        )
+        self._diag_exit_reasons["IC_ROLL_SIDE_FINALIZED"] = (
+            self._diag_exit_reasons.get("IC_ROLL_SIDE_FINALIZED", 0) + 1
         )
 
         return []

@@ -4082,8 +4082,8 @@ class TestCampaignPnLSingleSpread:
         assert condor.roll_count == 1
         assert condor.is_closing is False
         assert (
-            condor.put_side_active is True
-        )  # put_side_active unchanged (set by register_roll_close_fill)
+            condor.put_side_active is False
+        )  # V12.38: defensively set by _finalize_side_close (belt-and-suspenders)
         assert condor.call_side_active is True
 
     def test_handle_roll_fill_failure_finalizes_not_abandons(self):
