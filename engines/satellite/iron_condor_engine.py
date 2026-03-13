@@ -2965,6 +2965,29 @@ class IronCondorEngine:
     def has_open_positions(self) -> bool:
         return any(not p.is_closing for p in self._positions)
 
+    def is_closing_leg_symbol(self, symbol_norm: str) -> bool:
+        """Return True if symbol matches any leg of an IC condor in is_closing state."""
+        if not symbol_norm:
+            return False
+        for condor in self._positions:
+            if not condor.is_closing:
+                continue
+            for leg_attr in ("short_put", "long_put", "short_call", "long_call"):
+                leg = getattr(condor, leg_attr, None)
+                if leg is None:
+                    continue
+                leg_sym = str(getattr(leg, "symbol", "") or "")
+                if not leg_sym:
+                    continue
+                # Normalize: strip leading "?" prefix used by some QC symbol formats
+                if leg_sym.startswith("?"):
+                    leg_sym = leg_sym[1:]
+                if symbol_norm.startswith("?"):
+                    symbol_norm = symbol_norm[1:]
+                if leg_sym == symbol_norm:
+                    return True
+        return False
+
     def clear_pending(self) -> None:
         """Clear pending entry state (e.g., on fill failure)."""
         self._pending_entry = False

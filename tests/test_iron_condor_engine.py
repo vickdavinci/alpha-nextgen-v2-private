@@ -293,7 +293,7 @@ class TestEnvGates:
             result = engine._check_env_gates(
                 regime_score=68,
                 adx_value=15,
-                vix_current=10,
+                vix_current=9.0,  # Below IC_VIX_MIN=10.0
                 transition_ctx=_default_transition_ctx(),
                 current_time=datetime(2025, 3, 3, 11, 0),
                 effective_portfolio_value=100000,

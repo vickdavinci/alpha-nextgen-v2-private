@@ -2290,6 +2290,10 @@ class OptionsEngine:
         """Return True if symbol is tracked by an IC side fill tracker."""
         return self._iron_condor_engine.is_fill_tracking_symbol(symbol_norm)
 
+    def is_ic_closing_leg(self, symbol_norm: str) -> bool:
+        """Return True if symbol matches any leg of an IC condor in is_closing state."""
+        return self._iron_condor_engine.is_closing_leg_symbol(symbol_norm)
+
     def clear_ic_fill_trackers(self) -> None:
         """Clear IC side fill trackers."""
         self._iron_condor_engine.clear_fill_trackers()

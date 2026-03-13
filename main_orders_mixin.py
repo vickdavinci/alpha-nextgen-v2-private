@@ -2503,6 +2503,13 @@ class MainOrdersMixin:
                     # Spread mode: track ANY leg fill (long=positive, short=negative)
                     # Use abs(fill_qty) because _handle_spread_leg_fill expects positive qty
                     self._handle_spread_leg_fill(symbol, fill_price, abs(fill_qty))
+                elif self.options_engine.is_ic_closing_leg(symbol_norm):
+                    # V12.38: IC close fill — stale reconciliation handles cleanup.
+                    # Skip single-leg path to avoid phantom register_entry / exit noise.
+                    self.Log(
+                        f"IC_CLOSE_FILL: {symbol_norm[-21:]} @ ${fill_price:.2f} "
+                        f"x{abs(int(fill_qty))} | routed=STALE_RECON"
+                    )
                 elif fill_qty > 0:
                     # V6.12 FIX: Check if this is a BUY to close a spread short leg
                     # Short leg close = BUY (fill_qty > 0), but it's an EXIT not an entry
