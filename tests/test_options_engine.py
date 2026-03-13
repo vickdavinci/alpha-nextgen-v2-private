@@ -6549,6 +6549,141 @@ class TestBearPutProfitTargetScoping:
         assert result is not None
         assert "DTE_EXIT" in str(result[0].reason)
 
+    def test_bull_debit_stale_no_progress_exit(self, engine, monkeypatch):
+        """Bull call debits should exit as stale after 15 days with weak progress."""
+        long_call = OptionContract(
+            symbol="QQQ 271231C00300000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=0.35,
+            bid=5.10,
+            ask=5.30,
+            mid_price=5.20,
+            open_interest=5000,
+            days_to_expiry=25,
+        )
+        short_call = OptionContract(
+            symbol="QQQ 271231C00305000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=305.0,
+            expiry="2027-12-31",
+            delta=0.20,
+            bid=2.90,
+            ask=3.10,
+            mid_price=3.00,
+            open_interest=5000,
+            days_to_expiry=25,
+        )
+        spread = SpreadPosition(
+            long_leg=long_call,
+            short_leg=short_call,
+            spread_type="BULL_CALL_DEBIT",
+            net_debit=2.50,
+            max_profit=2.50,
+            width=5.0,
+            entry_time="2027-01-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=2,
+            regime_at_entry=62.0,
+        )
+        spread.highest_pnl_max_profit_pct = 0.15
+        engine._spread_position = spread
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 1, 20, 15, 0, 0),
+            Log=lambda *_args, **_kwargs: None,
+        )
+
+        monkeypatch.setattr(config, "VASS_ENABLE_PROFIT_TARGET_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MFE_LOCK_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MARK_STOP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_DAY4_EOD_EXITS", False)
+        monkeypatch.setattr(config, "VASS_DAY4_EOD_DECISION_ENABLED", False)
+        monkeypatch.setattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_REGIME_BREAK_EXIT_ENABLED", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=5.20,
+            short_leg_price=3.00,
+            regime_score=54.0,
+            vix_current=18.0,
+            current_dte=25,
+            underlying_price=299.0,
+        )
+
+        assert result is not None
+        assert "STALE_NO_PROGRESS_EXIT" in str(result[0].reason)
+
+    def test_bull_debit_stale_stop_skips_trade_with_meaningful_progress(self, engine, monkeypatch):
+        """Bull call debits with meaningful progress should bypass stale no-progress exit."""
+        long_call = OptionContract(
+            symbol="QQQ 271231C00300000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=0.35,
+            bid=5.10,
+            ask=5.30,
+            mid_price=5.20,
+            open_interest=5000,
+            days_to_expiry=25,
+        )
+        short_call = OptionContract(
+            symbol="QQQ 271231C00305000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=305.0,
+            expiry="2027-12-31",
+            delta=0.20,
+            bid=2.90,
+            ask=3.10,
+            mid_price=3.00,
+            open_interest=5000,
+            days_to_expiry=25,
+        )
+        spread = SpreadPosition(
+            long_leg=long_call,
+            short_leg=short_call,
+            spread_type="BULL_CALL_DEBIT",
+            net_debit=2.50,
+            max_profit=2.50,
+            width=5.0,
+            entry_time="2027-01-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=2,
+            regime_at_entry=62.0,
+        )
+        spread.highest_pnl_max_profit_pct = 0.25
+        engine._spread_position = spread
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 1, 20, 15, 0, 0),
+            Log=lambda *_args, **_kwargs: None,
+        )
+
+        monkeypatch.setattr(config, "VASS_ENABLE_PROFIT_TARGET_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MFE_LOCK_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MARK_STOP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_DAY4_EOD_EXITS", False)
+        monkeypatch.setattr(config, "VASS_DAY4_EOD_DECISION_ENABLED", False)
+        monkeypatch.setattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_REGIME_BREAK_EXIT_ENABLED", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=5.20,
+            short_leg_price=3.00,
+            regime_score=54.0,
+            vix_current=18.0,
+            current_dte=25,
+            underlying_price=299.0,
+        )
+
+        assert result is None
+
 
 class TestSpreadLifecycleCloseEvents:
     """Tests for CLOSED lifecycle backfill on realized spread removal."""
