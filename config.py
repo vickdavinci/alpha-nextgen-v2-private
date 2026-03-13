@@ -2397,7 +2397,9 @@ IC_PENDING_ENTRY_STALE_MINUTES = 7  # Auto-clear orphan pending IC entry lock
 
 # ── Loss breaker ──
 IC_LOSS_BREAKER_CONSECUTIVE = 3  # Pause after N consecutive losses
-IC_LOSS_BREAKER_PAUSE_DAYS = 5  # Pause duration in calendar days (V12.37: break weekly IC loss clusters across the same tape regime)
+IC_LOSS_BREAKER_PAUSE_DAYS = (
+    3  # Pause duration in calendar days (V12.38: reduced from 5 to avoid week-long lockouts)
+)
 
 # ── Assignment safety ──
 IC_SHORT_ITM_EXIT_PCT = 0.02  # Exit wing when short strike is 2% ITM
