@@ -4742,10 +4742,10 @@ class TestNeutralityExit:
         assert result is not None
         assert "QQQ_INVALIDATION_CLOSE" in str(result[0].reason)
 
-    def test_bull_debit_qqq_invalidation_undeveloped_trade_exits_earlier(
+    def test_bull_debit_qqq_invalidation_undeveloped_trade_keeps_existing_threshold(
         self, engine, long_leg, short_leg, monkeypatch
     ):
-        """Undeveloped bull debits should use tighter intraday invalidation."""
+        """Undeveloped bull debits should no longer use a tighter intraday invalidation."""
         self._make_spread(engine, "BULL_CALL", 2.50, long_leg, short_leg)
         engine._spread_position.entry_underlying_price = 100.0
         engine._spread_position.highest_pnl_max_profit_pct = 0.10
@@ -4754,9 +4754,10 @@ class TestNeutralityExit:
         monkeypatch.setattr(
             config,
             "VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_UNDEVELOPED_PCT",
-            0.025,
+            0.039,
         )
         monkeypatch.setattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT", 0.040)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
 
         result = engine.check_spread_exit_signals(
             long_leg_price=5.40,
@@ -4767,8 +4768,7 @@ class TestNeutralityExit:
             underlying_price=97.4,
         )
 
-        assert result is not None
-        assert "QQQ_INVALIDATION_INTRADAY" in str(result[0].reason)
+        assert result is None
 
     def test_bull_debit_qqq_invalidation_developed_trade_keeps_existing_threshold(
         self, engine, long_leg, short_leg, monkeypatch
@@ -6606,7 +6606,7 @@ class TestBearPutProfitTargetScoping:
         assert "DTE_EXIT" in str(result[0].reason)
 
     def test_bull_debit_stale_no_progress_exit(self, engine, monkeypatch):
-        """Bull call debits should exit as stale after 15 days with weak progress."""
+        """Bull call debits should exit as stale after 10 days with weak progress."""
         long_call = OptionContract(
             symbol="QQQ 271231C00300000",
             underlying="QQQ",
@@ -6648,7 +6648,7 @@ class TestBearPutProfitTargetScoping:
         spread.highest_pnl_max_profit_pct = 0.15
         engine._spread_position = spread
         engine.algorithm = SimpleNamespace(
-            Time=datetime(2027, 1, 20, 15, 0, 0),
+            Time=datetime(2027, 1, 11, 15, 0, 0),
             Log=lambda *_args, **_kwargs: None,
         )
 
@@ -6716,7 +6716,7 @@ class TestBearPutProfitTargetScoping:
         spread.highest_pnl_max_profit_pct = 0.25
         engine._spread_position = spread
         engine.algorithm = SimpleNamespace(
-            Time=datetime(2027, 1, 20, 15, 0, 0),
+            Time=datetime(2027, 1, 11, 15, 0, 0),
             Log=lambda *_args, **_kwargs: None,
         )
 
