@@ -2826,10 +2826,10 @@ class TestRollTrigger:
         t = datetime(2025, 3, 5, 12, 0, 0)
 
         # put_side_credit = 0.60, $ = 0.60 * 100 * 2 = $120
-        # trigger at 0.75 * $120 = $90 loss
+        # trigger at 0.75 * $120 = $90 loss (V12.38: mid VIX tier)
         with _patch_config(
             IC_ROLL_ENABLED=True,
-            IC_ROLL_TRIGGER_MULT=0.75,
+            IC_ROLL_TRIGGER_MID_VIX=0.75,
             IC_ROLL_MAX_PER_CAMPAIGN=1,
             IC_HOLD_GUARD_ENABLED=False,
         ):
@@ -2861,7 +2861,7 @@ class TestRollTrigger:
 
         with _patch_config(
             IC_ROLL_ENABLED=True,
-            IC_ROLL_TRIGGER_MULT=0.75,
+            IC_ROLL_TRIGGER_MID_VIX=0.75,
             IC_ROLL_MAX_PER_CAMPAIGN=1,
             IC_HOLD_GUARD_ENABLED=False,
         ):
@@ -2920,7 +2920,7 @@ class TestRollTrigger:
 
         with _patch_config(
             IC_ROLL_ENABLED=True,
-            IC_ROLL_TRIGGER_MULT=0.75,
+            IC_ROLL_TRIGGER_MID_VIX=0.75,
             IC_HOLD_GUARD_ENABLED=False,
             IC_STOP_LOSS_MULTIPLE=2.0,
         ):
@@ -2948,7 +2948,7 @@ class TestRollTrigger:
 
         with _patch_config(
             IC_ROLL_ENABLED=True,
-            IC_ROLL_TRIGGER_MULT=0.75,
+            IC_ROLL_TRIGGER_MID_VIX=0.75,
             IC_ROLL_MAX_PER_CAMPAIGN=1,
             IC_HOLD_GUARD_ENABLED=False,
             IC_STOP_LOSS_MULTIPLE=2.0,
@@ -2978,7 +2978,7 @@ class TestRollTrigger:
         with _patch_config(
             IC_ROLL_ENABLED=True,
             IC_ROLL_DURING_HOLD=True,
-            IC_ROLL_TRIGGER_MULT=0.75,
+            IC_ROLL_TRIGGER_LOW_VIX=0.75,  # V12.38: VIX-tiered (vix=15 < 16)
             IC_HOLD_GUARD_ENABLED=True,
             IC_HOLD_GUARD_DTE_FRACTION=0.5,
             IC_HOLD_GUARD_MIN_DAYS=1,
@@ -3013,7 +3013,7 @@ class TestRollTrigger:
         with _patch_config(
             IC_ROLL_ENABLED=True,
             IC_ROLL_DURING_HOLD=False,
-            IC_ROLL_TRIGGER_MULT=0.75,
+            IC_ROLL_TRIGGER_LOW_VIX=0.75,  # V12.38: VIX-tiered (vix=15 < 16)
             IC_HOLD_GUARD_ENABLED=True,
             IC_HOLD_GUARD_DTE_FRACTION=0.5,
             IC_HOLD_GUARD_MIN_DAYS=1,
@@ -3065,7 +3065,7 @@ class TestRollTrigger:
 
         with _patch_config(
             IC_ROLL_ENABLED=True,
-            IC_ROLL_TRIGGER_MULT=0.75,
+            IC_ROLL_TRIGGER_MID_VIX=0.75,  # V12.38: VIX-tiered (vix=18, mid range)
             IC_ROLL_MAX_PER_CAMPAIGN=1,
             IC_HOLD_GUARD_ENABLED=False,
         ):
@@ -3443,25 +3443,24 @@ class TestRegisterRollFill:
         assert seed["roll_new_long"]["strike"] == 496.0
 
 
-class TestAbandonRoll:
-    """Test _abandon_roll closes remaining side."""
+class TestFinalizeSideClose:
+    """Test _finalize_side_close lets surviving side ride (V12.38)."""
 
-    def test_abandon_roll_sets_is_closing_and_emits_close(self):
+    def test_finalize_side_close_does_not_close_surviving_side(self):
         engine = _make_engine()
         condor = _make_condor_with_side_credits()
         condor.is_rolling = True
         condor.rolling_side = "PUT"
         engine._positions.append(condor)
 
-        signals = engine._abandon_roll(condor, datetime(2025, 3, 5, 13, 0, 0))
+        signals = engine._finalize_side_close(condor, datetime(2025, 3, 5, 13, 0, 0))
 
-        assert condor.is_closing is True
+        assert condor.is_closing is False  # V12.38: surviving side rides
         assert condor.is_rolling is False
-        assert len(signals) == 1  # Close remaining CALL side
-        meta = signals[0].metadata
-        assert meta["roll_side"] == "CALL"
+        assert condor.roll_count == 1
+        assert len(signals) == 0  # No close signals emitted
 
-    def test_abandon_roll_books_realized_tested_side_pnl(self):
+    def test_finalize_side_close_books_realized_tested_side_pnl(self):
         engine = _make_engine()
         condor = _make_condor_with_side_credits()
         condor.is_rolling = True
@@ -3469,10 +3468,11 @@ class TestAbandonRoll:
         condor.pending_roll_close_realized_pnl = -95.0
         engine._positions.append(condor)
 
-        engine._abandon_roll(condor, datetime(2025, 3, 5, 13, 0, 0))
+        engine._finalize_side_close(condor, datetime(2025, 3, 5, 13, 0, 0))
 
         assert condor.cumulative_realized_pnl == pytest.approx(-95.0)
         assert condor.pending_roll_close_realized_pnl == 0.0
+        assert condor.roll_count == 1
 
     def test_final_abandon_close_updates_campaign_exit_snapshot(self):
         engine = _make_engine()
@@ -3659,7 +3659,7 @@ class TestRollReplacementSearch:
                 side_is_flat_func=lambda c, s: True,
                 chain=object(),
                 qqq_price=480.0,
-                vix_current=15.0,
+                vix_current=18.0,  # V12.38: must be >= IC_ROLL_REPLACEMENT_MIN_VIX (16)
                 current_time=datetime(2025, 3, 5, 12, 5, 0),
                 effective_portfolio_value=100000.0,
             )
@@ -3687,7 +3687,7 @@ class TestRollReplacementSearch:
             side_is_flat_func=lambda c, s: True,
             chain=object(),
             qqq_price=480.0,
-            vix_current=15.0,
+            vix_current=18.0,  # V12.38: must be >= IC_ROLL_REPLACEMENT_MIN_VIX (16)
             current_time=datetime(2025, 3, 5, 12, 5, 0),
             effective_portfolio_value=100000.0,
         )
@@ -3726,3 +3726,379 @@ class TestBuildSideClose:
         meta = signals[0].metadata
         assert meta["spread_side"] == "CALL_CREDIT_CLOSE"
         assert meta["is_roll_close"] is True
+
+
+# ═══════════════════════════════════════════════════════════════════
+# V12.38: Hedge Fund Rolling Fixes
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestVIXAdaptiveRollTrigger:
+    """V12.38: VIX-tiered roll trigger thresholds."""
+
+    def test_low_vix_blocks_roll_at_default_threshold(self):
+        """Low VIX (< 16) requires 1.25x credit loss — blocks moderate losses."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        engine._positions.append(condor)
+        t = datetime(2025, 3, 5, 12, 0, 0)
+
+        # put_side_credit = 0.60, $ = $120
+        # Low VIX default trigger = 1.25 * $120 = $150
+        # Loss of $95 is below $150 — should NOT trigger
+        with _patch_config(
+            IC_ROLL_ENABLED=True,
+            IC_HOLD_GUARD_ENABLED=False,
+        ):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-100.0,
+                current_dte=10,
+                vix_current=14.0,
+                regime_score=55.0,
+                qqq_price=480.0,
+                current_time=t,
+                put_side_pnl=-95.0,
+                call_side_pnl=-5.0,
+            )
+        if result:
+            reason, _ = result
+            assert reason not in (EXIT_IC_ROLL_PUT, EXIT_IC_ROLL_CALL)
+
+    def test_low_vix_fires_roll_at_125x(self):
+        """Low VIX fires when loss >= 1.25x side credit."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        engine._positions.append(condor)
+        t = datetime(2025, 3, 5, 12, 0, 0)
+
+        # $120 * 1.25 = $150 threshold. Loss = $155 >= $150 — should fire
+        with _patch_config(
+            IC_ROLL_ENABLED=True,
+            IC_HOLD_GUARD_ENABLED=False,
+        ):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-160.0,
+                current_dte=10,
+                vix_current=14.0,
+                regime_score=55.0,
+                qqq_price=480.0,
+                current_time=t,
+                put_side_pnl=-155.0,
+                call_side_pnl=-5.0,
+            )
+        assert result is not None
+        reason, _ = result
+        assert reason == EXIT_IC_ROLL_PUT
+
+    def test_mid_vix_fires_at_1x(self):
+        """Mid VIX (16-25) fires at 1.0x credit loss."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        engine._positions.append(condor)
+        t = datetime(2025, 3, 5, 12, 0, 0)
+
+        # $120 * 1.0 = $120. Loss = $125 >= $120 — should fire
+        with _patch_config(
+            IC_ROLL_ENABLED=True,
+            IC_HOLD_GUARD_ENABLED=False,
+        ):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-130.0,
+                current_dte=10,
+                vix_current=20.0,
+                regime_score=55.0,
+                qqq_price=480.0,
+                current_time=t,
+                put_side_pnl=-125.0,
+                call_side_pnl=-5.0,
+            )
+        assert result is not None
+        reason, _ = result
+        assert reason == EXIT_IC_ROLL_PUT
+
+    def test_high_vix_fires_at_075x(self):
+        """High VIX (> 25) fires at 0.75x credit loss (most aggressive)."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        engine._positions.append(condor)
+        t = datetime(2025, 3, 5, 12, 0, 0)
+
+        # $120 * 0.75 = $90. Loss = $95 >= $90 — should fire
+        with _patch_config(
+            IC_ROLL_ENABLED=True,
+            IC_HOLD_GUARD_ENABLED=False,
+        ):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-100.0,
+                current_dte=10,
+                vix_current=30.0,
+                regime_score=55.0,
+                qqq_price=480.0,
+                current_time=t,
+                put_side_pnl=-95.0,
+                call_side_pnl=-5.0,
+            )
+        assert result is not None
+        reason, _ = result
+        assert reason == EXIT_IC_ROLL_PUT
+
+
+class TestDTEFloor:
+    """V12.38: Roll blocked when DTE < IC_ROLL_MIN_DTE."""
+
+    def test_roll_blocked_below_min_dte(self):
+        """Roll should NOT fire when DTE < 4 (default)."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        engine._positions.append(condor)
+        t = datetime(2025, 3, 5, 12, 0, 0)
+
+        with _patch_config(
+            IC_ROLL_ENABLED=True,
+            IC_ROLL_TRIGGER_HIGH_VIX=0.75,
+            IC_HOLD_GUARD_ENABLED=False,
+            IC_STOP_LOSS_MULTIPLE=2.0,
+            IC_SHORT_ITM_EXIT_PCT=0.50,  # Disable wing breach
+            IC_TIME_EXIT_DTE=1,  # Only fire at DTE=1
+        ):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-100.0,
+                current_dte=3,  # Below IC_ROLL_MIN_DTE=4
+                vix_current=30.0,
+                regime_score=55.0,
+                qqq_price=480.0,
+                current_time=t,
+                put_side_pnl=-95.0,
+                call_side_pnl=-5.0,
+            )
+        # Should not trigger roll (DTE too low)
+        if result:
+            reason, _ = result
+            assert reason not in (EXIT_IC_ROLL_PUT, EXIT_IC_ROLL_CALL)
+
+    def test_roll_allowed_at_min_dte(self):
+        """Roll fires at exactly IC_ROLL_MIN_DTE."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        engine._positions.append(condor)
+        t = datetime(2025, 3, 5, 12, 0, 0)
+
+        with _patch_config(
+            IC_ROLL_ENABLED=True,
+            IC_ROLL_TRIGGER_HIGH_VIX=0.75,
+            IC_HOLD_GUARD_ENABLED=False,
+        ):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-100.0,
+                current_dte=4,  # Exactly IC_ROLL_MIN_DTE=4
+                vix_current=30.0,
+                regime_score=55.0,
+                qqq_price=480.0,
+                current_time=t,
+                put_side_pnl=-95.0,
+                call_side_pnl=-5.0,
+            )
+        assert result is not None
+        reason, _ = result
+        assert reason == EXIT_IC_ROLL_PUT
+
+
+class TestBuildExitSideAware:
+    """V12.38: _build_exit only emits signals for active sides."""
+
+    def test_build_exit_skips_inactive_put_side(self):
+        """After put side rolled off, _build_exit only closes call side."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits()
+        condor.put_side_active = False  # Put side already closed
+        engine._positions.append(condor)
+
+        reason, signals = engine._build_exit(
+            condor, EXIT_IC_STOP_LOSS, datetime(2025, 3, 5, 12, 0, 0)
+        )
+        assert reason == EXIT_IC_STOP_LOSS
+        assert len(signals) == 1
+        assert signals[0].metadata["spread_side"] == "CALL_CREDIT_CLOSE"
+
+    def test_build_exit_skips_inactive_call_side(self):
+        """After call side rolled off, _build_exit only closes put side."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits()
+        condor.call_side_active = False
+        engine._positions.append(condor)
+
+        reason, signals = engine._build_exit(
+            condor, EXIT_IC_STOP_LOSS, datetime(2025, 3, 5, 12, 0, 0)
+        )
+        assert len(signals) == 1
+        assert signals[0].metadata["spread_side"] == "PUT_CREDIT_CLOSE"
+
+    def test_build_exit_both_sides_active(self):
+        """Normal condor emits close for both sides."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits()
+        engine._positions.append(condor)
+
+        _, signals = engine._build_exit(condor, EXIT_IC_STOP_LOSS, datetime(2025, 3, 5, 12, 0, 0))
+        assert len(signals) == 2
+        sides = {s.metadata["spread_side"] for s in signals}
+        assert sides == {"PUT_CREDIT_CLOSE", "CALL_CREDIT_CLOSE"}
+
+
+class TestVIXReplacementGate:
+    """V12.38: Skip replacement search when VIX < IC_ROLL_REPLACEMENT_MIN_VIX."""
+
+    def test_low_vix_skips_replacement_search(self):
+        """VIX < 16 should finalize side close without searching for replacement."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits()
+        condor.is_rolling = True
+        condor.rolling_side = "CALL"
+        condor.roll_pending_since = "2025-03-05 12:00:00"
+        engine._positions.append(condor)
+
+        signals = engine.run_roll_follow_up(
+            condor=condor,
+            side_is_flat_func=lambda c, s: True,
+            chain=object(),
+            qqq_price=480.0,
+            vix_current=14.0,  # Below 16 threshold
+            current_time=datetime(2025, 3, 5, 12, 5, 0),
+            effective_portfolio_value=100000.0,
+        )
+
+        assert signals is not None
+        assert len(signals) == 0  # No close signals (surviving side rides)
+        assert condor.is_rolling is False
+        assert condor.is_closing is False
+        assert condor.roll_count == 1
+
+    def test_high_vix_searches_replacement(self):
+        """VIX >= 16 should proceed to replacement search."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits()
+        condor.is_rolling = True
+        condor.rolling_side = "CALL"
+        condor.roll_pending_since = "2025-03-05 12:00:00"
+        engine._positions.append(condor)
+
+        # No chain contracts → search returns None → finalize
+        signals = engine.run_roll_follow_up(
+            condor=condor,
+            side_is_flat_func=lambda c, s: True,
+            chain=object(),
+            qqq_price=480.0,
+            vix_current=20.0,  # Above threshold
+            current_time=datetime(2025, 3, 5, 12, 5, 0),
+            effective_portfolio_value=100000.0,
+        )
+
+        assert signals is not None
+        assert condor.roll_count == 1  # Side finalized after no replacement
+
+
+class TestWingBreachSideAware:
+    """V12.38: Wing breach only fires for active sides."""
+
+    def test_put_wing_breach_skipped_when_put_inactive(self):
+        """Put wing breach should not fire when put side already closed."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits()
+        condor.put_side_active = False
+        engine._positions.append(condor)
+
+        with _patch_config(
+            IC_HOLD_GUARD_ENABLED=False,
+            IC_ROLL_ENABLED=False,
+            IC_SHORT_ITM_EXIT_PCT=0.02,
+            IC_STOP_LOSS_MULTIPLE=5.0,
+            IC_TIME_EXIT_DTE=1,
+        ):
+            # QQQ well above put short strike (ITM for put side)
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-10.0,
+                current_dte=10,
+                vix_current=18.0,
+                regime_score=55.0,
+                qqq_price=condor.put_short_strike - 20.0,  # Deep ITM for put
+                current_time=datetime(2025, 3, 5, 12, 0, 0),
+            )
+        if result:
+            reason, _ = result
+            assert reason != EXIT_IC_WING_BREACH_PUT
+
+    def test_call_wing_breach_fires_when_call_active(self):
+        """Call wing breach still fires normally when call side is active."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits()
+        condor.put_side_active = False  # Only call active
+        engine._positions.append(condor)
+
+        with _patch_config(
+            IC_HOLD_GUARD_ENABLED=False,
+            IC_ROLL_ENABLED=False,
+            IC_SHORT_ITM_EXIT_PCT=0.02,
+            IC_STOP_LOSS_MULTIPLE=5.0,
+            IC_TIME_EXIT_DTE=1,
+            IC_UNDERLYING_INVALIDATION_PCT=1.0,  # Disable underlying invalidation
+        ):
+            # QQQ well above call short strike (ITM for call)
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-10.0,
+                current_dte=10,
+                vix_current=18.0,
+                regime_score=55.0,
+                qqq_price=condor.call_short_strike + 20.0,  # Deep ITM for call
+                current_time=datetime(2025, 3, 5, 12, 0, 0),
+            )
+        assert result is not None
+        reason, _ = result
+        assert reason == EXIT_IC_WING_BREACH_CALL
+
+
+class TestCampaignPnLSingleSpread:
+    """V12.38: Campaign P&L accounting for single-spread condors after _finalize_side_close."""
+
+    def test_campaign_pnl_includes_closed_side_loss(self):
+        """After finalize, campaign accounting includes realized loss from closed side."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        condor.is_rolling = True
+        condor.rolling_side = "PUT"
+        condor.pending_roll_close_realized_pnl = -80.0  # Lost $80 on put side
+        engine._positions.append(condor)
+
+        engine._finalize_side_close(condor, datetime(2025, 3, 5, 13, 0, 0))
+
+        assert condor.cumulative_realized_pnl == pytest.approx(-80.0)
+        assert condor.roll_count == 1
+        assert condor.is_closing is False
+        assert (
+            condor.put_side_active is True
+        )  # put_side_active unchanged (set by register_roll_close_fill)
+        assert condor.call_side_active is True
+
+    def test_handle_roll_fill_failure_finalizes_not_abandons(self):
+        """handle_roll_fill_failure should finalize side, not close surviving side."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits()
+        condor.is_rolling = True
+        condor.rolling_side = "CALL"
+        condor.pending_roll_close_realized_pnl = -50.0
+        engine._positions.append(condor)
+
+        signals = engine.handle_roll_fill_failure(condor.condor_id, datetime(2025, 3, 5, 13, 0, 0))
+
+        assert len(signals) == 0  # No close signals
+        assert condor.is_closing is False
+        assert condor.is_rolling is False
+        assert condor.roll_count == 1
+        assert condor.cumulative_realized_pnl == pytest.approx(-50.0)
