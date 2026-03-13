@@ -1546,6 +1546,39 @@ def check_spread_exit_signals_impl(
             except Exception:
                 pass
 
+        # V12.38: Exit stale bullish debit spreads that never made meaningful progress.
+        if (
+            exit_reason is None
+            and is_bullish_debit_spread
+            and not regime_confirmed
+            and bool(getattr(config, "VASS_BULL_DEBIT_STALE_EXIT_ENABLED", False))
+            and self.algorithm is not None
+        ):
+            try:
+                entry_dt = datetime.strptime(spread.entry_time[:19], "%Y-%m-%d %H:%M:%S")
+                held_days = (self.algorithm.Time.date() - entry_dt.date()).days
+                max_hold_days = int(getattr(config, "VASS_BULL_DEBIT_STALE_MAX_HOLD_DAYS", 15))
+                max_current_pnl_pct = float(
+                    getattr(config, "VASS_BULL_DEBIT_STALE_MAX_CURRENT_PNL_PCT", 0.10)
+                )
+                min_progress_pnl_pct = float(
+                    getattr(config, "VASS_BULL_DEBIT_STALE_MIN_PROGRESS_PNL_PCT", 0.20)
+                )
+                peak_progress_pnl_pct = float(
+                    getattr(spread, "highest_pnl_max_profit_pct", 0.0) or 0.0
+                )
+                if (
+                    held_days >= max_hold_days
+                    and pnl_pct < max_current_pnl_pct
+                    and peak_progress_pnl_pct < min_progress_pnl_pct
+                ):
+                    exit_reason = (
+                        f"STALE_NO_PROGRESS_EXIT {pnl_pct:.1%} "
+                        f"(Held={held_days}d, Peak={peak_progress_pnl_pct:.1%})"
+                    )
+            except Exception:
+                pass
+
         # Exit 1: Profit target.
         if regime_confirmed:
             adaptive_profit_pct = float(
