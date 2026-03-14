@@ -378,9 +378,11 @@ class IronCondorEngine:
             if loss_ratio >= daily_loss_pct:
                 return R_IC_DAILY_LOSS_STOP
 
-        # Gate: Budget / open risk cap (purely %-based, scales with portfolio)
-        ic_open_risk_pct = float(getattr(config, "IC_OPEN_RISK_PCT", 0.03))
-        max_open_risk = ic_open_risk_pct * effective_portfolio_value
+        # Gate: IC sleeve budget (%-based, scales with portfolio)
+        ic_total_allocation = float(
+            getattr(config, "IC_TOTAL_ALLOCATION", getattr(config, "IC_OPEN_RISK_PCT", 0.03))
+        )
+        max_open_risk = ic_total_allocation * effective_portfolio_value
         if ic_open_risk >= max_open_risk:
             return R_IC_BUDGET_EXCEEDED
 
@@ -1082,15 +1084,20 @@ class IronCondorEngine:
             self._record_drop(R_IC_PER_TRADE_RISK_EXCEEDED)
             return None
 
-        # Cap by open risk budget (%-based, scales with portfolio)
-        ic_open_risk_pct = float(getattr(config, "IC_OPEN_RISK_PCT", 0.03))
-        max_open_risk = ic_open_risk_pct * effective_portfolio_value
+        # Cap by IC sleeve budget, then deploy only a fraction of remaining sleeve.
+        ic_total_allocation = float(
+            getattr(config, "IC_TOTAL_ALLOCATION", getattr(config, "IC_OPEN_RISK_PCT", 0.03))
+        )
+        deploy_pct = max(0.0, min(float(getattr(config, "IC_DEPLOY_PCT_OF_BUDGET", 1.0)), 1.0))
+        max_open_risk = ic_total_allocation * effective_portfolio_value
         remaining_budget = max(0, max_open_risk - self.get_open_risk())
-        max_spreads_by_budget = int(remaining_budget / (max_loss * 100)) if max_loss > 0 else 0
+        deploy_budget = max(0.0, remaining_budget * deploy_pct)
+        usable_budget = min(per_trade_max_risk, deploy_budget)
+        max_spreads_by_budget = int(usable_budget / (max_loss * 100)) if max_loss > 0 else 0
         if max_spreads_by_budget < 1:
             self._record_drop(R_IC_BUDGET_EXCEEDED)
             return None
-        num_spreads = min(max_spreads_by_risk, max_spreads_by_budget, 10)
+        num_spreads = min(max_spreads_by_risk, max_spreads_by_budget)
 
         # ── Determine VIX tier label ──
         if vix_current < 16:

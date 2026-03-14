@@ -179,7 +179,9 @@ class PortfolioRouter:
         "TREND": config.TREND_TOTAL_ALLOCATION,  # 55% max (was 70%)
         "OPT": config.OPTIONS_SWING_ALLOCATION,  # Swing options share of total portfolio
         "OPT_INTRADAY": config.OPTIONS_INTRADAY_ALLOCATION,  # Intraday options share
-        "OPT_IC": float(getattr(config, "IC_OPEN_RISK_PCT", 0.03)),  # Iron condor risk allocation
+        "OPT_IC": float(
+            getattr(config, "IC_TOTAL_ALLOCATION", getattr(config, "IC_OPEN_RISK_PCT", 0.03))
+        ),  # Iron condor sleeve allocation
         "MR": config.MR_TOTAL_ALLOCATION,  # 10% max
         "HEDGE": 0.30,  # Hedge: 30% max (TMF 20% + PSQ 10%)
         "COLD_START": 0.35,  # Cold Start: 35% max (subset of TREND)
@@ -356,7 +358,9 @@ class PortfolioRouter:
             enabled_weights["OPT_INTRADAY"] = float(
                 getattr(config, "OPTIONS_INTRADAY_ALLOCATION", 0.0)
             )
-            enabled_weights["OPT_IC"] = float(getattr(config, "IC_OPEN_RISK_PCT", 0.0))
+            enabled_weights["OPT_IC"] = float(
+                getattr(config, "IC_TOTAL_ALLOCATION", getattr(config, "IC_OPEN_RISK_PCT", 0.0))
+            )
         if getattr(config, "ISOLATION_TREND_ENABLED", False):
             enabled_weights["TREND"] = float(getattr(config, "TREND_TOTAL_ALLOCATION", 0.0))
         if getattr(config, "ISOLATION_MR_ENABLED", False):

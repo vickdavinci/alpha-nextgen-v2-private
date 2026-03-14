@@ -138,14 +138,14 @@ class TestPortfolioRouterInit:
         monkeypatch.setattr(portfolio_router_module.config, "ISOLATION_COLD_START_ENABLED", False)
         monkeypatch.setattr(portfolio_router_module.config, "OPTIONS_SWING_ALLOCATION", 0.40)
         monkeypatch.setattr(portfolio_router_module.config, "OPTIONS_INTRADAY_ALLOCATION", 0.10)
-        monkeypatch.setattr(portfolio_router_module.config, "IC_OPEN_RISK_PCT", 0.05)
+        monkeypatch.setattr(portfolio_router_module.config, "IC_TOTAL_ALLOCATION", 0.20)
 
         router = PortfolioRouter()
 
-        total = 0.40 + 0.10 + 0.05
+        total = 0.40 + 0.10 + 0.20
         assert router._source_allocation_limits["OPT"] == pytest.approx(0.40 / total)
         assert router._source_allocation_limits["OPT_INTRADAY"] == pytest.approx(0.10 / total)
-        assert router._source_allocation_limits["OPT_IC"] == pytest.approx(0.05 / total)
+        assert router._source_allocation_limits["OPT_IC"] == pytest.approx(0.20 / total)
 
 
 class TestCollect:

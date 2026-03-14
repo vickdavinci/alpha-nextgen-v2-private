@@ -3107,6 +3107,88 @@ class TestRollRecord:
         assert rr2.new_credit == 0.45
 
 
+class TestICSizing:
+    """Test IC sleeve sizing semantics."""
+
+    def test_search_uses_deploy_pct_of_budget(self):
+        engine = _make_engine()
+        chain = _make_option_chain(
+            put_delta=0.18,
+            call_delta=0.18,
+            put_credit=0.90,
+            call_credit=0.90,
+            wing_width=5,
+            dte=10,
+        )
+
+        overrides = {
+            **_SEARCH_DEFAULTS,
+            "IC_TOTAL_ALLOCATION": 0.20,
+            "IC_DEPLOY_PCT_OF_BUDGET": 0.10,
+            "IC_PER_TRADE_RISK_PCT": 0.50,
+            "IC_CW_FLOOR_MID_VIX": 0.15,
+            "IC_CW_ABSOLUTE_FLOOR": 0.15,
+            "IC_MAX_IMPLIED_WR": 0.90,
+            "IC_EM_BUFFER_MULT": 0.0,
+            "IC_ADX_CALL_OTM_ADX_THRESHOLD": 999.0,
+        }
+        with _patch_config(**overrides):
+            result = engine._search_single_dte_range(
+                contracts=chain,
+                dte_min=7,
+                dte_max=14,
+                qqq_price=480.0,
+                vix_current=18.0,
+                regime_score=60.0,
+                adx_value=15.0,
+                current_time=datetime(2025, 3, 5, 11, 0, 0),
+                effective_portfolio_value=100000,
+                fallback_stats=[],
+            )
+
+        assert result is not None
+        assert result.num_spreads == 5
+
+    def test_search_is_not_capped_at_ten_spreads(self):
+        engine = _make_engine()
+        chain = _make_option_chain(
+            put_delta=0.18,
+            call_delta=0.18,
+            put_credit=0.90,
+            call_credit=0.90,
+            wing_width=5,
+            dte=10,
+        )
+
+        overrides = {
+            **_SEARCH_DEFAULTS,
+            "IC_TOTAL_ALLOCATION": 0.20,
+            "IC_DEPLOY_PCT_OF_BUDGET": 1.0,
+            "IC_PER_TRADE_RISK_PCT": 0.50,
+            "IC_CW_FLOOR_MID_VIX": 0.15,
+            "IC_CW_ABSOLUTE_FLOOR": 0.15,
+            "IC_MAX_IMPLIED_WR": 0.90,
+            "IC_EM_BUFFER_MULT": 0.0,
+            "IC_ADX_CALL_OTM_ADX_THRESHOLD": 999.0,
+        }
+        with _patch_config(**overrides):
+            result = engine._search_single_dte_range(
+                contracts=chain,
+                dte_min=7,
+                dte_max=14,
+                qqq_price=480.0,
+                vix_current=18.0,
+                regime_score=60.0,
+                adx_value=15.0,
+                current_time=datetime(2025, 3, 5, 11, 0, 0),
+                effective_portfolio_value=1000000,
+                fallback_stats=[],
+            )
+
+        assert result is not None
+        assert result.num_spreads > 10
+
+
 class TestCondorRollingFields:
     """Test IronCondorPosition rolling field persistence."""
 

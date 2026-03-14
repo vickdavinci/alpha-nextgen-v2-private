@@ -2384,8 +2384,10 @@ IC_FRIDAY_CLOSE_DTE = (
 IC_REGIME_EXIT_BUFFER = 5  # Exit buffer (V12.32: was 8, faster regime break exit)
 
 # ── Capital / risk model ──
-IC_OPEN_RISK_PCT = 0.05  # Max open IC risk as % of portfolio (5%) — scales with equity
-IC_PER_TRADE_RISK_PCT = 0.03  # Per-trade max risk as % of portfolio (3%) — scales with equity
+IC_TOTAL_ALLOCATION = 0.20  # 20% of total portfolio reserved for IC sleeve
+IC_DEPLOY_PCT_OF_BUDGET = 0.25  # Deploy up to 25% of remaining IC sleeve per condor
+IC_OPEN_RISK_PCT = IC_TOTAL_ALLOCATION  # Legacy alias; prefer IC_TOTAL_ALLOCATION
+IC_PER_TRADE_RISK_PCT = 0.03  # Per-trade max defined risk as % of portfolio (3%)
 IC_DAILY_LOSS_PCT = 0.015  # Daily IC loss stop (1.5% of portfolio)
 
 # ── Position limits ──
