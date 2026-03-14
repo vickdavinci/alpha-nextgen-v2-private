@@ -1714,28 +1714,28 @@ class TestMFEOn14To21DTE:
         assert condor.mfe_lock_tier == 0  # Not armed
         # No MFE exit (may exit via other cascades, so check tier only)
 
-    def test_21dte_t1_arms_and_floor_at_5pct(self):
-        """T1 arms at 30%, floor protects at 5% above breakeven."""
+    def test_21dte_t1_arms_and_floor_at_20pct(self):
+        """T1 arms at 30%, floor protects at 20% above breakeven (V12.39: was 5%)."""
         engine = _make_engine()
         condor = _make_condor(entry_dte=21, vix=18)
         condor.highest_pnl_pct = 0.35  # Above T1=0.30
         # credit_100 = 240
-        # PnL at 6% of credit → above T1 floor (5%), no MFE exit
+        # PnL at 22% of credit → above T1 floor (20%), no MFE exit
         result = engine.check_exit_signals(
-            **self._exit_kwargs(condor, combined_pnl=14.4)  # 14.4/240 = 0.06
+            **self._exit_kwargs(condor, combined_pnl=52.8)  # 52.8/240 = 0.22
         )
         assert condor.mfe_lock_tier == 1
-        # 6% > 5% floor → no MFE exit
+        # 22% > 20% floor → no MFE exit
         assert result is None or result[0] != "IC_MFE_LOCK"
 
-    def test_21dte_t1_floor_fires_below_5pct(self):
-        """T1 floor at 5% triggers exit when PnL drops below."""
+    def test_21dte_t1_floor_fires_below_20pct(self):
+        """T1 floor at 20% triggers exit when PnL drops below (V12.39: was 5%)."""
         engine = _make_engine()
         condor = _make_condor(entry_dte=21, vix=18)
         condor.highest_pnl_pct = 0.35  # Arms T1
-        # PnL at 4% of credit → below T1 floor (5%), MFE exit fires
+        # PnL at 18% of credit → below T1 floor (20%), MFE exit fires
         result = engine.check_exit_signals(
-            **self._exit_kwargs(condor, combined_pnl=9.6)  # 9.6/240 = 0.04
+            **self._exit_kwargs(condor, combined_pnl=43.2)  # 43.2/240 = 0.18
         )
         assert condor.mfe_lock_tier == 1
         assert result is not None
@@ -2233,20 +2233,21 @@ class TestMFELock:
         assert abs(condor.highest_pnl_pct - 0.50) < 0.01
 
     def test_mfe_t1_arms_and_exits(self):
-        """T1 arms at 30% of credit captured, exits when P&L falls to 5%."""
+        """T1 arms at 30% of credit captured, exits when P&L falls to 20% (V12.39: was 5%)."""
         engine = _make_engine()
         condor = _make_condor(net_credit=1.20, num_spreads=2)
         # credit_100 = 240
 
-        # First call: P&L at 10% of credit → arms T1 via prior HWM, no exit yet
+        # First call: P&L at 22% of credit → arms T1 via prior HWM, no exit yet
         condor.highest_pnl_pct = 0.35  # Simulate prior HWM (above T1 trigger=0.30)
-        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=24))
-        # 24/240 = 0.10 → above T1 floor (5%), no exit
+        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=52.8))
+        # 52.8/240 = 0.22 → above T1 floor (20%), no exit
         assert result is None
         assert condor.mfe_lock_tier == 1
 
-        # P&L drops to 0 → below T1 floor (5%), should exit
-        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=0))
+        # P&L drops to 15% → below T1 floor (20%), should exit
+        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=36))
+        # 36/240 = 0.15 → below 0.20 floor
         assert result is not None
         reason, _ = result
         assert reason == EXIT_IC_MFE_LOCK
@@ -2310,15 +2311,15 @@ class TestMFELock:
         assert result is None or result[0] != EXIT_IC_MFE_LOCK
 
     def test_mfe_no_exit_above_floor(self):
-        """P&L above floor → no MFE exit fires."""
+        """P&L above floor → no MFE exit fires (V12.39: T1 floor=20%, T2 floor=25%)."""
         engine = _make_engine()
         condor = _make_condor(net_credit=1.20, num_spreads=2)
         # credit_100 = 240
 
-        # Arm T1 (HWM = 35%), P&L at 15% → above T1 floor (5%)
+        # Arm T1 (HWM = 35%), P&L at 22% → above T1 floor (20%)
         condor.highest_pnl_pct = 0.35
-        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=36))
-        # 36/240 = 0.15 → above 0.05 floor
+        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=52.8))
+        # 52.8/240 = 0.22 → above 0.20 floor
         assert result is None
 
         # Arm T2 (HWM = 50%), P&L at 30% → above T2 floor (25%)
@@ -3851,7 +3852,7 @@ class TestDTEFloor:
     """V12.38: Roll blocked when DTE < IC_ROLL_MIN_DTE."""
 
     def test_roll_blocked_below_min_dte(self):
-        """Roll should NOT fire when DTE < 4 (default)."""
+        """Roll should NOT fire when DTE < 2 (V12.39: was 4)."""
         engine = _make_engine()
         condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
         engine._positions.append(condor)
@@ -3868,7 +3869,7 @@ class TestDTEFloor:
             result = engine.check_exit_signals(
                 condor=condor,
                 combined_pnl=-100.0,
-                current_dte=3,  # Below IC_ROLL_MIN_DTE=4
+                current_dte=1,  # Below IC_ROLL_MIN_DTE=2
                 vix_current=30.0,
                 regime_score=55.0,
                 qqq_price=480.0,
@@ -3882,7 +3883,7 @@ class TestDTEFloor:
             assert reason not in (EXIT_IC_ROLL_PUT, EXIT_IC_ROLL_CALL)
 
     def test_roll_allowed_at_min_dte(self):
-        """Roll fires at exactly IC_ROLL_MIN_DTE."""
+        """Roll fires at exactly IC_ROLL_MIN_DTE=2 (V12.39: was 4)."""
         engine = _make_engine()
         condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
         engine._positions.append(condor)
@@ -3896,7 +3897,7 @@ class TestDTEFloor:
             result = engine.check_exit_signals(
                 condor=condor,
                 combined_pnl=-100.0,
-                current_dte=4,  # Exactly IC_ROLL_MIN_DTE=4
+                current_dte=2,  # Exactly IC_ROLL_MIN_DTE=2
                 vix_current=30.0,
                 regime_score=55.0,
                 qqq_price=480.0,

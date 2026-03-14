@@ -2467,9 +2467,7 @@ IC_MFE_T1_TRIGGER = (
     0.30  # T1: arm at 30% capture (V12.33: was 0.20 — matches theta curve midpoint at 14-21 DTE)
 )
 IC_MFE_T2_TRIGGER = 0.45  # T2: arm at 45% capture (V12.33: was 0.35 — approaching target, protect accumulated theta)
-IC_MFE_T1_FLOOR_PCT = (
-    0.05  # T1 floor: 5% of credit (V12.33: was 0.0 — buffer above BE for gamma noise)
-)
+IC_MFE_T1_FLOOR_PCT = 0.20  # T1 floor: 20% of credit (V12.39: was 0.05 — protect gains after T1 arm, prevents +30% MFE → breakeven bleed)
 IC_MFE_T2_FLOOR_PCT = 0.25  # T2 floor: lock 25% of credit captured (unchanged)
 
 # ── IC Per-Side Rolling (V12.37) ──
@@ -2480,7 +2478,7 @@ IC_ROLL_ENABLED = True  # Feature flag for rolling
 IC_ROLL_TRIGGER_LOW_VIX = 1.25  # VIX < 16: high bar (mean-reverting tape, noise triggers)
 IC_ROLL_TRIGGER_MID_VIX = 1.00  # VIX 16-25: moderate threshold
 IC_ROLL_TRIGGER_HIGH_VIX = 0.75  # VIX > 25: directional risk is real, roll early
-IC_ROLL_MIN_DTE = 4  # Don't roll with < 4 DTE remaining (let expiry handle it)
+IC_ROLL_MIN_DTE = 2  # Don't roll with < 2 DTE remaining (V12.39: was 4 — allow roll before assignment-risk force-close at DTE 2-3)
 IC_ROLL_MAX_PER_CAMPAIGN = 1  # Max rolls per condor campaign (v1: hardcoded to 1)
 IC_ROLL_MIN_CREDIT_RECOVERY_PCT = 0.50  # Replacement must collect >= 50% of original side credit
 IC_ROLL_FURTHER_OTM_MIN_PCT = 0.005  # New short must be >= 0.5% further OTM
