@@ -2005,11 +2005,19 @@ class IronCondorEngine:
         if not side_is_flat_func(condor, condor.rolling_side):
             return None  # Still waiting for side-close fills
 
-        # Side is flat — search for replacement (V12.38: VIX gate)
-        replacement_min_vix = float(getattr(config, "IC_ROLL_REPLACEMENT_MIN_VIX", 16))
-        if vix_current < replacement_min_vix:
+        realized_loss = max(0.0, -float(condor.pending_roll_close_realized_pnl or 0.0))
+        surviving_side_pnl = self._estimate_surviving_side_pnl(
+            condor=condor,
+            chain=chain,
+            qqq_price=qqq_price,
+            current_time=current_time,
+        )
+        survivor_buffer_pct = float(getattr(config, "IC_ROLL_SURVIVOR_BUFFER_PCT", 0.80))
+        survivor_buffer = realized_loss * survivor_buffer_pct
+        if realized_loss > 0 and surviving_side_pnl >= survivor_buffer:
             self._log(
-                f"IC_ROLL_SKIP_REPLACEMENT: VIX={vix_current:.1f} < {replacement_min_vix} | "
+                f"IC_ROLL_SKIP_REPLACEMENT: survivor_pnl=${surviving_side_pnl:.0f} "
+                f">= {survivor_buffer_pct:.0%} of realized_loss=${realized_loss:.0f} | "
                 f"finalizing side close only | id={condor.condor_id}",
                 trades_only=True,
             )
@@ -2017,7 +2025,8 @@ class IronCondorEngine:
 
         self._log(
             f"IC_ROLL_SIDE_FLAT: {condor.rolling_side} closed | "
-            f"searching replacement | id={condor.condor_id}",
+            f"survivor_pnl=${surviving_side_pnl:.0f} | searching replacement | "
+            f"id={condor.condor_id}",
             trades_only=True,
         )
 
@@ -2045,6 +2054,24 @@ class IronCondorEngine:
             return self._finalize_side_close(condor, current_time)
 
         new_short, new_long, new_credit = replacement
+        replacement_credit_dollars = new_credit * 100 * condor.num_spreads
+        combined_recovery_pct = float(getattr(config, "IC_ROLL_COMBINED_RECOVERY_PCT", 1.00))
+        combined_recovery_floor = realized_loss * combined_recovery_pct
+        if (
+            realized_loss > 0
+            and (max(0.0, surviving_side_pnl) + replacement_credit_dollars)
+            < combined_recovery_floor
+        ):
+            self._log(
+                f"IC_ROLL_SKIP_REPLACEMENT: survivor_pnl=${surviving_side_pnl:.0f} + "
+                f"new_credit=${replacement_credit_dollars:.0f} < "
+                f"{combined_recovery_pct:.0%} of realized_loss=${realized_loss:.0f} | "
+                f"finalizing side close only | id={condor.condor_id}",
+                trades_only=True,
+            )
+            self._record_drop(R_IC_ROLL_CREDIT_INSUFFICIENT)
+            return self._finalize_side_close(condor, current_time)
+
         self._log(
             f"IC_ROLL_REPLACEMENT: {condor.rolling_side} | "
             f"K_short={new_short.strike} K_long={new_long.strike} | "
@@ -2064,6 +2091,41 @@ class IronCondorEngine:
         )
 
         return self._build_roll_entry_signal(condor, new_short, new_long, new_credit, current_time)
+
+    def _estimate_surviving_side_pnl(
+        self,
+        *,
+        condor: IronCondorPosition,
+        chain: Any,
+        qqq_price: float,
+        current_time: datetime,
+    ) -> float:
+        """Estimate live P&L on the side that remains after the tested-side close."""
+        side = "CALL" if condor.rolling_side == "PUT" else "PUT"
+        if side == "PUT" and not condor.put_side_active:
+            return 0.0
+        if side == "CALL" and not condor.call_side_active:
+            return 0.0
+
+        contracts = self._extract_chain_contracts(chain, qqq_price, current_time)
+        if not contracts:
+            return 0.0
+
+        contract_map = {c.symbol: c for c in contracts}
+        if side == "PUT":
+            short_leg = contract_map.get(condor.short_put.symbol)
+            long_leg = contract_map.get(condor.long_put.symbol)
+            side_credit = condor.put_side_credit
+        else:
+            short_leg = contract_map.get(condor.short_call.symbol)
+            long_leg = contract_map.get(condor.long_call.symbol)
+            side_credit = condor.call_side_credit
+
+        if short_leg is None or long_leg is None:
+            return 0.0
+
+        spread_mark = max(0.0, short_leg.mid_price - long_leg.mid_price)
+        return (side_credit - spread_mark) * 100 * condor.num_spreads
 
     def _search_replacement(
         self,

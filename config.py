@@ -2476,18 +2476,23 @@ IC_MFE_T2_FLOOR_PCT = 0.25  # T2 floor: lock 25% of credit captured (unchanged)
 # When a tested side hits a loss threshold, close only that side and open a
 # replacement spread further OTM. Converts binary WIN/LOSE into WIN/ROLL→WIN.
 IC_ROLL_ENABLED = True  # Feature flag for rolling
-# V12.38: VIX-adaptive trigger thresholds (replace fixed IC_ROLL_TRIGGER_MULT=0.75)
+# V12.38+: VIX-adaptive trigger thresholds (replace fixed IC_ROLL_TRIGGER_MULT=0.75)
 IC_ROLL_TRIGGER_LOW_VIX = 1.25  # VIX < 16: high bar (mean-reverting tape, noise triggers)
 IC_ROLL_TRIGGER_MID_VIX = 1.00  # VIX 16-25: moderate threshold
 IC_ROLL_TRIGGER_HIGH_VIX = 0.75  # VIX > 25: directional risk is real, roll early
 IC_ROLL_MIN_DTE = 4  # Don't roll with < 4 DTE remaining (let expiry handle it)
-IC_ROLL_REPLACEMENT_MIN_VIX = 16  # Only search replacement spreads when VIX >= 16
 IC_ROLL_MAX_PER_CAMPAIGN = 1  # Max rolls per condor campaign (v1: hardcoded to 1)
 IC_ROLL_MIN_CREDIT_RECOVERY_PCT = 0.50  # Replacement must collect >= 50% of original side credit
 IC_ROLL_FURTHER_OTM_MIN_PCT = 0.005  # New short must be >= 0.5% further OTM
 IC_ROLL_SAME_EXPIRY_ONLY = True  # v1: same expiry only, no next-weekly fallback
 IC_ROLL_PENDING_STALE_MINUTES = 10  # Abandon roll if replacement not filled in N min
 IC_ROLL_DURING_HOLD = True  # Allow rolling during hold guard window
+IC_ROLL_SURVIVOR_BUFFER_PCT = (
+    0.80  # Skip replacement if surviving side already covers >= 80% of realized loss
+)
+IC_ROLL_COMBINED_RECOVERY_PCT = (
+    1.00  # Replacement must bring survivor+new credit to >= 100% of realized loss
+)
 
 # V3.0: Minimum margin percentage to allow options trading
 # Replaces hardcoded $1,000 check in main.py

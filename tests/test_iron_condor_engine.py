@@ -3659,7 +3659,7 @@ class TestRollReplacementSearch:
                 side_is_flat_func=lambda c, s: True,
                 chain=object(),
                 qqq_price=480.0,
-                vix_current=18.0,  # V12.38: must be >= IC_ROLL_REPLACEMENT_MIN_VIX (16)
+                vix_current=18.0,
                 current_time=datetime(2025, 3, 5, 12, 5, 0),
                 effective_portfolio_value=100000.0,
             )
@@ -3687,7 +3687,7 @@ class TestRollReplacementSearch:
             side_is_flat_func=lambda c, s: True,
             chain=object(),
             qqq_price=480.0,
-            vix_current=18.0,  # V12.38: must be >= IC_ROLL_REPLACEMENT_MIN_VIX (16)
+            vix_current=18.0,
             current_time=datetime(2025, 3, 5, 12, 5, 0),
             effective_portfolio_value=100000.0,
         )
@@ -3951,24 +3951,26 @@ class TestBuildExitSideAware:
         assert sides == {"PUT_CREDIT_CLOSE", "CALL_CREDIT_CLOSE"}
 
 
-class TestVIXReplacementGate:
-    """V12.38: Skip replacement search when VIX < IC_ROLL_REPLACEMENT_MIN_VIX."""
+class TestRollReplacementEconomics:
+    """V12.39: Replacement should depend on campaign economics, not hard VIX."""
 
-    def test_low_vix_skips_replacement_search(self):
-        """VIX < 16 should finalize side close without searching for replacement."""
+    def test_survivor_buffer_skips_replacement_search(self):
+        """Finalize side close when the surviving side already covers most realized loss."""
         engine = _make_engine()
         condor = _make_condor_with_side_credits()
         condor.is_rolling = True
         condor.rolling_side = "CALL"
         condor.roll_pending_since = "2025-03-05 12:00:00"
+        condor.pending_roll_close_realized_pnl = -100.0
         engine._positions.append(condor)
+        engine._estimate_surviving_side_pnl = lambda **_: 90.0
 
         signals = engine.run_roll_follow_up(
             condor=condor,
             side_is_flat_func=lambda c, s: True,
             chain=object(),
             qqq_price=480.0,
-            vix_current=14.0,  # Below 16 threshold
+            vix_current=14.0,
             current_time=datetime(2025, 3, 5, 12, 5, 0),
             effective_portfolio_value=100000.0,
         )
@@ -3979,14 +3981,16 @@ class TestVIXReplacementGate:
         assert condor.is_closing is False
         assert condor.roll_count == 1
 
-    def test_high_vix_searches_replacement(self):
-        """VIX >= 16 should proceed to replacement search."""
+    def test_replacement_search_runs_when_survivor_buffer_is_insufficient(self):
+        """Low VIX should still search replacement when the campaign still needs repair."""
         engine = _make_engine()
         condor = _make_condor_with_side_credits()
         condor.is_rolling = True
         condor.rolling_side = "CALL"
         condor.roll_pending_since = "2025-03-05 12:00:00"
+        condor.pending_roll_close_realized_pnl = -100.0
         engine._positions.append(condor)
+        engine._estimate_surviving_side_pnl = lambda **_: 20.0
 
         # No chain contracts → search returns None → finalize
         signals = engine.run_roll_follow_up(
@@ -3994,13 +3998,105 @@ class TestVIXReplacementGate:
             side_is_flat_func=lambda c, s: True,
             chain=object(),
             qqq_price=480.0,
-            vix_current=20.0,  # Above threshold
+            vix_current=14.0,
             current_time=datetime(2025, 3, 5, 12, 5, 0),
             effective_portfolio_value=100000.0,
         )
 
         assert signals is not None
         assert condor.roll_count == 1  # Side finalized after no replacement
+
+    def test_replacement_skipped_when_combined_recovery_is_too_weak(self):
+        """Reject replacement if survivor P&L plus new credit does not repair the campaign enough."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(num_spreads=2)
+        condor.is_rolling = True
+        condor.rolling_side = "CALL"
+        condor.roll_pending_since = "2025-03-05 12:00:00"
+        condor.pending_roll_close_realized_pnl = -200.0
+        engine._positions.append(condor)
+        engine._estimate_surviving_side_pnl = lambda **_: 30.0
+        engine._search_replacement = lambda **_: (
+            OptionContract(
+                symbol="QQQ 250312C00490000",
+                direction=OptionDirection.CALL,
+                strike=490.0,
+                expiry="2025-03-12",
+                mid_price=0.60,
+                bid=0.55,
+                ask=0.65,
+            ),
+            OptionContract(
+                symbol="QQQ 250312C00496000",
+                direction=OptionDirection.CALL,
+                strike=496.0,
+                expiry="2025-03-12",
+                mid_price=0.20,
+                bid=0.15,
+                ask=0.25,
+            ),
+            0.40,
+        )
+
+        signals = engine.run_roll_follow_up(
+            condor=condor,
+            side_is_flat_func=lambda c, s: True,
+            chain=object(),
+            qqq_price=480.0,
+            vix_current=12.0,
+            current_time=datetime(2025, 3, 5, 12, 5, 0),
+            effective_portfolio_value=100000.0,
+        )
+
+        assert signals == []
+        assert condor.is_rolling is False
+        assert condor.roll_count == 1
+
+    def test_low_vix_can_still_emit_replacement_when_campaign_needs_repair(self):
+        """Low VIX should not block a valid repair if survivor buffer is weak and replacement economics work."""
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(num_spreads=2)
+        condor.is_rolling = True
+        condor.rolling_side = "PUT"
+        condor.roll_pending_since = "2025-03-05 12:00:00"
+        condor.pending_roll_close_realized_pnl = -100.0
+        engine._positions.append(condor)
+        engine._estimate_surviving_side_pnl = lambda **_: 10.0
+        engine._search_replacement = lambda **_: (
+            OptionContract(
+                symbol="QQQ 250312P00460000",
+                direction=OptionDirection.PUT,
+                strike=460.0,
+                expiry="2025-03-12",
+                mid_price=0.90,
+                bid=0.85,
+                ask=0.95,
+            ),
+            OptionContract(
+                symbol="QQQ 250312P00454000",
+                direction=OptionDirection.PUT,
+                strike=454.0,
+                expiry="2025-03-12",
+                mid_price=0.20,
+                bid=0.15,
+                ask=0.25,
+            ),
+            0.60,
+        )
+
+        signals = engine.run_roll_follow_up(
+            condor=condor,
+            side_is_flat_func=lambda c, s: True,
+            chain=object(),
+            qqq_price=480.0,
+            vix_current=12.0,
+            current_time=datetime(2025, 3, 5, 12, 5, 0),
+            effective_portfolio_value=100000.0,
+        )
+
+        assert signals is not None
+        assert len(signals) == 1
+        assert signals[0].metadata["is_roll_entry"] is True
 
 
 class TestWingBreachSideAware:
