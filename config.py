@@ -2282,9 +2282,7 @@ IRON_CONDOR_ENGINE_ENABLED = True  # IC-only isolation backtest
 
 # ── Regime / environment gates ──
 IC_REGIME_MIN = 55  # Neutral zone lower bound (V12.37: recenter IC toward true neutral instead of upper-neutral drift)
-IC_REGIME_MAX = (
-    72  # Neutral zone upper bound (V12.38: reopen mild bullish-neutral tape for rolling IC)
-)
+IC_REGIME_MAX = 75  # Neutral zone upper bound (V12.40: extend into mild-bullish to capture more condor opportunities)
 IC_REGIME_PERSISTENCE_DAYS = 2  # Require 2 consecutive neutral DAYS (V12.33: was 3 — too strict for bull mkts where neutral is brief)
 IC_VIX_MIN = 10.0  # Minimum VIX (V12.38: admit calm low-vol tape that V12.37 starved while keeping structure filters intact)
 IC_VIX_MAX = 32.0  # Max VIX — too volatile for range thesis
