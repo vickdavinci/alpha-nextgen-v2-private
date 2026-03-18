@@ -494,18 +494,15 @@ class IronCondorEngine:
         if not (start_h * 60 + start_m <= t_minutes <= end_h * 60 + end_m):
             return R_IC_OUTSIDE_ENTRY_WINDOW
 
-        # Gate: Event day block
+        # Gate: FOMC day block
         if bool(getattr(config, "IC_EVENT_DAY_BLOCK_ENABLED", True)):
-            # Support both canonical and legacy context keys.
-            if bool(
-                transition_ctx.get("is_event_day", False)
-                or transition_ctx.get("is_macro_event_day", False)
-                or transition_ctx.get("has_macro_event", False)
-            ):
+            today_str = current_time.strftime("%Y-%m-%d")
+            fomc_dates = getattr(config, "IC_FOMC_DATES", set())
+            if today_str in fomc_dates:
                 self._emit_regime_decision(
                     "BLOCK",
                     R_IC_EVENT_DAY_BLOCK,
-                    {"is_event_day": True},
+                    {"fomc_date": today_str},
                 )
                 return R_IC_EVENT_DAY_BLOCK
 

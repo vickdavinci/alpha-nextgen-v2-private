@@ -2291,7 +2291,37 @@ IC_ADX_CALL_OTM_ADX_THRESHOLD = 18.0  # V12.36: when ADX > this, enforce wider c
 IC_ADX_CALL_OTM_MIN_PCT = 0.030  # V12.36: min call short OTM % when ADX above threshold (3.0%)
 IC_REGIME_VELOCITY_WINDOW = 5  # Look-back window in trading days for regime velocity
 IC_REGIME_VELOCITY_MAX = 8.0  # Max abs score change over window — block if exceeded (V12.32)
-IC_EVENT_DAY_BLOCK_ENABLED = True  # Block entries on CPI/FOMC/major macro days
+IC_EVENT_DAY_BLOCK_ENABLED = True  # Block entries on FOMC decision days
+# FOMC decision dates — update annually from https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+IC_FOMC_DATES = {
+    # 2024
+    "2024-01-31",
+    "2024-03-20",
+    "2024-05-01",
+    "2024-06-12",
+    "2024-07-31",
+    "2024-09-18",
+    "2024-11-07",
+    "2024-12-18",
+    # 2025
+    "2025-01-29",
+    "2025-03-19",
+    "2025-05-07",
+    "2025-06-18",
+    "2025-07-30",
+    "2025-09-17",
+    "2025-10-29",
+    "2025-12-17",
+    # 2026
+    "2026-01-28",
+    "2026-03-18",
+    "2026-04-29",
+    "2026-06-17",
+    "2026-07-29",
+    "2026-09-16",
+    "2026-10-28",
+    "2026-12-16",
+}
 
 # ── Entry timing ──
 IC_ENTRY_START_HOUR = 10  # Earliest entry hour (ET)

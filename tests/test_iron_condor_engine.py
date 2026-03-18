@@ -45,6 +45,7 @@ from engines.satellite.iron_condor_engine import (
     R_IC_CW_BELOW_MIN,
     R_IC_DAILY_TRADE_LIMIT,
     R_IC_DISABLED,
+    R_IC_EVENT_DAY_BLOCK,
     R_IC_LOSS_BREAKER_ACTIVE,
     R_IC_OUTSIDE_ENTRY_WINDOW,
     R_IC_POSITION_LIMIT,
@@ -142,7 +143,6 @@ def _default_transition_ctx(state: str = "STABLE", fast_overlay: str = "") -> Di
         "transition_state": state,
         "fast_overlay": fast_overlay,
         "transition_score": 68,
-        "is_event_day": False,
     }
 
 
@@ -434,6 +434,43 @@ class TestEnvGates:
                 ic_open_risk=0,
             )
             assert result == R_IC_LOSS_BREAKER_ACTIVE
+
+    def test_fomc_day_blocks_entry(self):
+        engine = _make_engine()
+        engine._regime_neutral_days = 5
+        fomc_date = "2024-03-20"
+        with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True), patch.object(
+            config, "IC_FOMC_DATES", {fomc_date}
+        ):
+            result = engine._check_env_gates(
+                regime_score=68,
+                adx_value=15,
+                vix_current=14,
+                transition_ctx=_default_transition_ctx(),
+                current_time=datetime(2024, 3, 20, 11, 0),
+                effective_portfolio_value=100000,
+                margin_remaining=50000,
+                ic_open_risk=0,
+            )
+            assert result == R_IC_EVENT_DAY_BLOCK
+
+    def test_non_fomc_day_passes_event_gate(self):
+        engine = _make_engine()
+        engine._regime_neutral_days = 5
+        with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True), patch.object(
+            config, "IC_FOMC_DATES", {"2024-03-20"}
+        ):
+            result = engine._check_env_gates(
+                regime_score=68,
+                adx_value=15,
+                vix_current=14,
+                transition_ctx=_default_transition_ctx(),
+                current_time=datetime(2024, 3, 21, 11, 0),
+                effective_portfolio_value=100000,
+                margin_remaining=50000,
+                ic_open_risk=0,
+            )
+            assert result is None
 
 
 # ═══════════════════════════════════════════════════════════════════
