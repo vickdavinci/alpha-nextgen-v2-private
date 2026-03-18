@@ -1248,6 +1248,19 @@ def check_spread_exit_signals_impl(
                     and entry_underlying > 0
                     and current_underlying > 0
                 ):
+                    setattr(
+                        self.algorithm,
+                        "_diag_vass_bull_debit_day4_promotion_checks",
+                        int(
+                            getattr(
+                                self.algorithm,
+                                "_diag_vass_bull_debit_day4_promotion_checks",
+                                0,
+                            )
+                            or 0
+                        )
+                        + 1,
+                    )
                     current_underlying_return = (current_underlying / entry_underlying) - 1.0
                     peak_progress_pnl_pct = float(
                         getattr(spread, "highest_pnl_max_profit_pct", 0.0) or 0.0
@@ -1299,6 +1312,55 @@ def check_spread_exit_signals_impl(
                         if not getattr(spread, "thesis_promoted_at", None):
                             spread.thesis_promoted_at = self.algorithm.Time.strftime(
                                 "%Y-%m-%d %H:%M:%S"
+                            )
+                        setattr(
+                            self.algorithm,
+                            "_diag_vass_bull_debit_day4_promotions",
+                            int(
+                                getattr(
+                                    self.algorithm,
+                                    "_diag_vass_bull_debit_day4_promotions",
+                                    0,
+                                )
+                                or 0
+                            )
+                            + 1,
+                        )
+                        spread_key = self._build_spread_key(spread)
+                        self.log(
+                            "BULL_DEBIT_DAY4_THESIS_PROMOTED: "
+                            f"Key={spread_key} | Policy={spread.entry_policy_mode}->{spread.active_policy_mode} | "
+                            f"Regime={regime_score:.0f} | Peak={peak_progress_pnl_pct:.1%} | "
+                            f"QQQRet={current_underlying_return:.1%} | P&L={pnl_pct:.1%}",
+                            trades_only=True,
+                        )
+                        signal_event_fn = getattr(
+                            self.algorithm, "_record_signal_lifecycle_event", None
+                        )
+                        if callable(signal_event_fn):
+                            signal_event_fn(
+                                engine="VASS",
+                                event="THESIS_PROMOTED",
+                                signal_id=str(
+                                    getattr(spread, "signal_id", "")
+                                    or self._build_spread_key(spread)
+                                ),
+                                trace_id=str(
+                                    getattr(spread, "trace_id", "")
+                                    or self._build_spread_key(spread)
+                                ),
+                                direction=str(getattr(spread, "signal_direction", "") or ""),
+                                strategy=str(
+                                    getattr(spread, "signal_strategy", "")
+                                    or str(spread.spread_type or "")
+                                ),
+                                code="R_THESIS_PROMOTED",
+                                gate_name="BULL_DEBIT_DAY4_THESIS_PROMOTION",
+                                reason=(
+                                    f"Regime={regime_score:.0f} | Peak={peak_progress_pnl_pct:.1%} | "
+                                    f"QQQRet={current_underlying_return:.1%} | P&L={pnl_pct:.1%}"
+                                ),
+                                contract_symbol=self._symbol_str(spread.long_leg.symbol),
                             )
                         stored_policy_mode = "THESIS_FIRST"
                         thesis_first_mode = True
