@@ -137,7 +137,11 @@ def check_spread_exit_signals_impl(
         else f"Tier={vass_tier} RefVIX={float(vass_ref_vix):.1f}"
     )
     vass_exit_policy_mode = str(getattr(config, "VASS_EXIT_POLICY_MODE", "LEGACY")).upper()
-    stored_policy_mode = str(getattr(spread, "entry_policy_mode", "") or "").upper()
+    stored_policy_mode = str(
+        getattr(spread, "active_policy_mode", None)
+        or getattr(spread, "entry_policy_mode", "")
+        or ""
+    ).upper()
     if stored_policy_mode in {"LEGACY"}:
         thesis_first_mode = False
     elif stored_policy_mode in {"THESIS_FIRST", "CREDIT_THETA_FIRST_ACTIVE"}:
@@ -1291,7 +1295,11 @@ def check_spread_exit_signals_impl(
                         and current_underlying_return > -max_drawdown_pct
                         and pnl_pct > min_current_pnl_pct
                     ):
-                        spread.entry_policy_mode = "THESIS_FIRST"
+                        spread.active_policy_mode = "THESIS_FIRST"
+                        if not getattr(spread, "thesis_promoted_at", None):
+                            spread.thesis_promoted_at = self.algorithm.Time.strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            )
                         stored_policy_mode = "THESIS_FIRST"
                         thesis_first_mode = True
                         regime_confirmed_no_stop_mode = bool(

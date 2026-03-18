@@ -310,6 +310,7 @@ def register_spread_entry_impl(
         spread.entry_policy_mode = (
             "THESIS_FIRST" if exit_policy_mode == "THESIS_FIRST" else "LEGACY"
         )
+    spread.active_policy_mode = spread.entry_policy_mode
     is_credit_spread = spread_type_upper in {
         "BULL_PUT_CREDIT",
         "BEAR_CALL_CREDIT",
@@ -329,6 +330,7 @@ def register_spread_entry_impl(
                 theta_first_active = False
         if theta_first_active:
             spread.entry_policy_mode = "CREDIT_THETA_FIRST_ACTIVE"
+            spread.active_policy_mode = spread.entry_policy_mode
 
     self._spread_neutrality_warn_by_key.pop(self._build_spread_key(spread), None)
     self._spread_positions.append(spread)

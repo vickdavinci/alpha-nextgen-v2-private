@@ -249,6 +249,12 @@ class SpreadPosition:
     entry_policy_mode: Optional[
         str
     ] = None  # V12.27: freeze exit-policy mode at entry to avoid mid-run config drift
+    active_policy_mode: Optional[
+        str
+    ] = None  # V12.40: current runtime policy mode after any later thesis promotion
+    thesis_promoted_at: Optional[
+        str
+    ] = None  # V12.40: timestamp for one-way bull-debit thesis promotion
     is_closing: bool = False  # V2.12 Fix #2: Prevent duplicate exit signals
     highest_pnl_pct: float = 0.0  # V9.4: Track high-water mark for trailing stop
     highest_pnl_max_profit_pct: float = 0.0  # V10.15: MFE as % of max profit
@@ -292,6 +298,8 @@ class SpreadPosition:
             "entry_vix": self.entry_vix,
             "entry_underlying_price": self.entry_underlying_price,
             "entry_policy_mode": self.entry_policy_mode,
+            "active_policy_mode": self.active_policy_mode,
+            "thesis_promoted_at": self.thesis_promoted_at,
             "is_closing": self.is_closing,
             "highest_pnl_pct": self.highest_pnl_pct,
             "highest_pnl_max_profit_pct": self.highest_pnl_max_profit_pct,
@@ -323,6 +331,8 @@ class SpreadPosition:
             entry_vix=data.get("entry_vix"),
             entry_underlying_price=data.get("entry_underlying_price"),
             entry_policy_mode=data.get("entry_policy_mode"),
+            active_policy_mode=data.get("active_policy_mode"),
+            thesis_promoted_at=data.get("thesis_promoted_at"),
             is_closing=data.get("is_closing", False),  # V2.12: Default False for backwards compat
             highest_pnl_pct=data.get("highest_pnl_pct", 0.0),  # V9.4: Trailing stop HWM
             highest_pnl_max_profit_pct=data.get("highest_pnl_max_profit_pct", 0.0),
