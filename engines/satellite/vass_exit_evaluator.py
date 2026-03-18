@@ -144,9 +144,6 @@ def check_spread_exit_signals_impl(
         thesis_first_mode = True
     else:
         thesis_first_mode = vass_exit_policy_mode == "THESIS_FIRST"
-    thesis_mode_revoked = bool(getattr(spread, "thesis_mode_revoked", False))
-    if thesis_mode_revoked:
-        thesis_first_mode = False
     regime_confirmed_no_stop_mode = thesis_first_mode and bool(
         getattr(config, "VASS_REGIME_CONFIRMED_NO_STOP", False)
     )
@@ -1496,112 +1493,6 @@ def check_spread_exit_signals_impl(
                     f"(MFE={spread.highest_pnl_max_profit_pct:.1%}, Floor=${floor_pnl:.2f}, {vass_profile_tag})"
                 )
 
-        # V12.39: Replace blunt BULL_CALL day-4 cleanup with a day-6 thesis review.
-        # Thesis trades that are no longer validated are downgraded into the existing
-        # tactical debit path. Only clearly broken theses exit here.
-        if (
-            exit_reason is None
-            and is_bullish_debit_spread
-            and thesis_first_mode
-            and bool(getattr(config, "VASS_BULL_DEBIT_DAY6_THESIS_REVIEW_ENABLED", False))
-            and self.algorithm is not None
-        ):
-            try:
-                entry_dt = datetime.strptime(spread.entry_time[:19], "%Y-%m-%d %H:%M:%S")
-                held_days = (self.algorithm.Time.date() - entry_dt.date()).days
-                review_days = int(
-                    getattr(config, "VASS_BULL_DEBIT_DAY6_THESIS_REVIEW_MIN_HOLD_DAYS", 6)
-                )
-                review_time = str(
-                    getattr(config, "VASS_BULL_DEBIT_DAY6_THESIS_REVIEW_TIME", "15:45")
-                )
-                review_hour, review_minute = [int(x) for x in review_time.split(":", 1)]
-                in_review_window = self.algorithm.Time.hour > review_hour or (
-                    self.algorithm.Time.hour == review_hour
-                    and self.algorithm.Time.minute >= review_minute
-                )
-                entry_underlying = float(getattr(spread, "entry_underlying_price", 0.0) or 0.0)
-                current_underlying = float(underlying_price or 0.0)
-                if (
-                    held_days >= review_days
-                    and in_review_window
-                    and entry_underlying > 0
-                    and current_underlying > 0
-                ):
-                    current_underlying_return = (current_underlying / entry_underlying) - 1.0
-                    peak_progress_pnl_pct = float(
-                        getattr(spread, "highest_pnl_max_profit_pct", 0.0) or 0.0
-                    )
-                    bull_confirm_min = float(
-                        getattr(config, "VASS_REGIME_CONFIRMED_BULL_MIN", 57.0)
-                    )
-                    keep_progress_min = float(
-                        getattr(
-                            config,
-                            "VASS_BULL_DEBIT_DAY6_THESIS_KEEP_MIN_PROGRESS_PCT",
-                            0.10,
-                        )
-                    )
-                    keep_max_drawdown_pct = float(
-                        getattr(
-                            config,
-                            "VASS_BULL_DEBIT_DAY6_THESIS_KEEP_MAX_DRAWDOWN_PCT",
-                            0.010,
-                        )
-                    )
-                    exit_drawdown_pct = float(
-                        getattr(
-                            config,
-                            "VASS_BULL_DEBIT_DAY6_THESIS_EXIT_DRAWDOWN_PCT",
-                            0.015,
-                        )
-                    )
-                    exit_max_progress_pct = float(
-                        getattr(
-                            config,
-                            "VASS_BULL_DEBIT_DAY6_THESIS_EXIT_MAX_PROGRESS_PCT",
-                            0.10,
-                        )
-                    )
-                    require_ma20 = bool(
-                        getattr(config, "VASS_BULL_DEBIT_DAY6_THESIS_REQUIRE_MA20", True)
-                    )
-                    ma20_ok = True
-                    if require_ma20:
-                        qqq_sma20 = getattr(self.algorithm, "qqq_sma20", None)
-                        ma20_ok = bool(
-                            qqq_sma20 is not None
-                            and getattr(qqq_sma20, "IsReady", False)
-                            and current_underlying >= float(qqq_sma20.Current.Value)
-                        )
-
-                    keep_thesis = (
-                        regime_score >= bull_confirm_min
-                        and ma20_ok
-                        and peak_progress_pnl_pct >= keep_progress_min
-                        and current_underlying_return > -keep_max_drawdown_pct
-                    )
-                    clearly_broken = (
-                        current_underlying_return <= -exit_drawdown_pct
-                        and peak_progress_pnl_pct < exit_max_progress_pct
-                    )
-                    if clearly_broken:
-                        exit_reason = (
-                            f"DAY6_THESIS_EXIT {current_underlying_return:.1%} "
-                            f"(Held={held_days}d, Peak={peak_progress_pnl_pct:.1%}, Regime={regime_score:.0f})"
-                        )
-                    elif not keep_thesis:
-                        spread.thesis_mode_revoked = True
-                        thesis_first_mode = False
-                        thesis_mode_revoked = True
-                        regime_confirmed_no_stop_mode = False
-                        regime_confirmed = False
-                        thesis_soft_stop_mode = False
-                        disable_tactical_exits_for_thesis = False
-                        disable_vix_spike_for_thesis = False
-            except Exception:
-                pass
-
         if (
             exit_reason is None
             and bool(getattr(config, "VASS_TAIL_RISK_CAP_ENABLED", True))
@@ -1642,7 +1533,6 @@ def check_spread_exit_signals_impl(
         if (
             exit_reason is None
             and day4_eod_exit_enabled
-            and not is_bullish_debit_spread
             and not regime_confirmed
             and bool(getattr(config, "VASS_DAY4_EOD_DECISION_ENABLED", False))
             and self.algorithm is not None
