@@ -1383,37 +1383,11 @@ class IronCondorEngine:
             hold_minutes = hold_days * 1440
 
             if live_minutes < hold_minutes:
-                # Layer 1: Hard stop during hold — catastrophic loss only
-                hard_stop_mult = float(getattr(config, "IC_HOLD_HARD_STOP_CREDIT_MULT", 2.50))
-                if loss_pct_of_credit >= hard_stop_mult:
-                    self._log(
-                        f"IC_HARD_STOP_DURING_HOLD: loss={loss_pct_of_credit:.2f}x >= "
-                        f"{hard_stop_mult:.2f}x | id={condor.condor_id} "
-                        f"| held={live_minutes:.0f}m/{hold_minutes}m",
-                        trades_only=True,
-                    )
-                    return self._build_exit(condor, EXIT_IC_HARD_STOP_HOLD, current_time)
-
-                # Layer 2: EOD risk gate during hold — overnight de-risk
-                eod_enabled = bool(getattr(config, "IC_HOLD_EOD_GATE_ENABLED", True))
-                eod_min_min = int(getattr(config, "IC_HOLD_EOD_GATE_MIN_MINUTES", 240))
-                if eod_enabled and live_minutes >= eod_min_min:
-                    is_eod = current_time.hour > 15 or (
-                        current_time.hour == 15 and current_time.minute >= 45
-                    )
-                    eod_mult = float(getattr(config, "IC_HOLD_EOD_GATE_CREDIT_MULT", 1.50))
-                    if is_eod and loss_pct_of_credit >= eod_mult:
-                        self._log(
-                            f"IC_EOD_HOLD_RISK_GATE: loss={loss_pct_of_credit:.2f}x >= "
-                            f"{eod_mult:.2f}x at EOD | id={condor.condor_id}",
-                            trades_only=True,
-                        )
-                        return self._build_exit(condor, EXIT_IC_EOD_HOLD_GATE, current_time)
-
-                # Layer 3: optional rolling during hold
+                # Layer 1: Per-side roll check — save the profitable side
+                # Roll fires before hard stop so a breached side gets rolled
+                # instead of killing the entire condor.
                 if (
-                    bool(getattr(config, "IC_ROLL_DURING_HOLD", False))
-                    and bool(getattr(config, "IC_ROLL_ENABLED", False))
+                    bool(getattr(config, "IC_ROLL_ENABLED", False))
                     and put_side_pnl is not None
                     and call_side_pnl is not None
                 ):
@@ -1428,6 +1402,34 @@ class IronCondorEngine:
                     )
                     if roll_result is not None:
                         return roll_result
+
+                # Layer 2: Hard stop during hold — catastrophic loss only
+                # Only reached if roll didn't fire (both sides losing, or roll disabled)
+                hard_stop_mult = float(getattr(config, "IC_HOLD_HARD_STOP_CREDIT_MULT", 2.50))
+                if loss_pct_of_credit >= hard_stop_mult:
+                    self._log(
+                        f"IC_HARD_STOP_DURING_HOLD: loss={loss_pct_of_credit:.2f}x >= "
+                        f"{hard_stop_mult:.2f}x | id={condor.condor_id} "
+                        f"| held={live_minutes:.0f}m/{hold_minutes}m",
+                        trades_only=True,
+                    )
+                    return self._build_exit(condor, EXIT_IC_HARD_STOP_HOLD, current_time)
+
+                # Layer 3: EOD risk gate during hold — overnight de-risk
+                eod_enabled = bool(getattr(config, "IC_HOLD_EOD_GATE_ENABLED", True))
+                eod_min_min = int(getattr(config, "IC_HOLD_EOD_GATE_MIN_MINUTES", 240))
+                if eod_enabled and live_minutes >= eod_min_min:
+                    is_eod = current_time.hour > 15 or (
+                        current_time.hour == 15 and current_time.minute >= 45
+                    )
+                    eod_mult = float(getattr(config, "IC_HOLD_EOD_GATE_CREDIT_MULT", 1.50))
+                    if is_eod and loss_pct_of_credit >= eod_mult:
+                        self._log(
+                            f"IC_EOD_HOLD_RISK_GATE: loss={loss_pct_of_credit:.2f}x >= "
+                            f"{eod_mult:.2f}x at EOD | id={condor.condor_id}",
+                            trades_only=True,
+                        )
+                        return self._build_exit(condor, EXIT_IC_EOD_HOLD_GATE, current_time)
 
                 # Layer 4: Profitable bypass — let profit target run
                 if combined_pnl > 0:

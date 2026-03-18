@@ -3042,7 +3042,8 @@ class TestRollTrigger:
         assert reason == EXIT_IC_ROLL_PUT
         assert condor.is_rolling is True
 
-    def test_hold_guard_blocks_roll_when_roll_during_hold_disabled(self):
+    def test_roll_fires_during_hold_guard(self):
+        """V12.41: rolling fires during hold guard — save the profitable side."""
         engine = _make_engine()
         condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2, entry_dte=10)
         condor.entry_time = "2025-03-05 10:00:00"
@@ -3050,8 +3051,7 @@ class TestRollTrigger:
 
         with _patch_config(
             IC_ROLL_ENABLED=True,
-            IC_ROLL_DURING_HOLD=False,
-            IC_ROLL_TRIGGER_LOW_VIX=0.75,  # V12.38: VIX-tiered (vix=15 < 16)
+            IC_ROLL_TRIGGER_LOW_VIX=0.75,  # VIX-tiered (vix=15 < 16)
             IC_HOLD_GUARD_ENABLED=True,
             IC_HOLD_GUARD_DTE_FRACTION=0.5,
             IC_HOLD_GUARD_MIN_DAYS=1,
@@ -3072,8 +3072,9 @@ class TestRollTrigger:
                 call_side_pnl=20.0,
             )
 
-        assert result is None
-        assert condor.is_rolling is False
+        # Roll fires during hold — losing side closed, profitable side kept
+        assert result is not None
+        assert condor.is_rolling is True
 
     def test_run_exit_cycle_skips_rolling_condors(self):
         """run_exit_cycle should skip condors with is_rolling=True."""
