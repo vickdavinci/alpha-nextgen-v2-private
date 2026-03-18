@@ -298,8 +298,18 @@ def register_spread_entry_impl(
     # V12.27: Freeze policy mode at entry so runtime config flips do not
     # silently alter exit behavior for existing spreads.
     exit_policy_mode = str(getattr(config, "VASS_EXIT_POLICY_MODE", "LEGACY") or "LEGACY").upper()
-    spread.entry_policy_mode = "THESIS_FIRST" if exit_policy_mode == "THESIS_FIRST" else "LEGACY"
     spread_type_upper = str(spread.spread_type or "").upper()
+    is_bullish_debit_spread = spread_type_upper in {
+        "BULL_CALL",
+        "BULL_CALL_DEBIT",
+        SpreadStrategy.BULL_CALL_DEBIT.value,
+    }
+    if is_bullish_debit_spread:
+        spread.entry_policy_mode = "LEGACY"
+    else:
+        spread.entry_policy_mode = (
+            "THESIS_FIRST" if exit_policy_mode == "THESIS_FIRST" else "LEGACY"
+        )
     is_credit_spread = spread_type_upper in {
         "BULL_PUT_CREDIT",
         "BEAR_CALL_CREDIT",

@@ -4104,6 +4104,106 @@ class TestRejectionAwareSizing:
 
         assert engine._rejection_margin_cap is None
 
+    def test_bull_call_spread_starts_in_legacy_even_when_thesis_first_is_enabled(
+        self, engine, monkeypatch
+    ):
+        """Bull call debits should enter tactical-first even under THESIS_FIRST mode."""
+        monkeypatch.setattr(config, "VASS_EXIT_POLICY_MODE", "THESIS_FIRST")
+
+        long_leg = OptionContract(
+            symbol="QQQ 271231C00300000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=0.60,
+            bid=5.00,
+            ask=5.50,
+            mid_price=5.25,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        short_leg = OptionContract(
+            symbol="QQQ 271231C00305000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=305.0,
+            expiry="2027-12-31",
+            delta=0.40,
+            bid=3.00,
+            ask=3.50,
+            mid_price=3.25,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        engine._pending_spread_long_leg = long_leg
+        engine._pending_spread_short_leg = short_leg
+        engine._pending_spread_type = "BULL_CALL"
+        engine._pending_net_debit = 2.00
+        engine._pending_max_profit = 3.00
+        engine._pending_spread_width = 5.0
+        engine._pending_num_contracts = 10
+        engine._pending_entry_score = 3.5
+
+        engine.register_spread_entry(
+            long_leg_fill_price=5.25,
+            short_leg_fill_price=3.25,
+            entry_time="10:30:00",
+            current_date="2027-01-15",
+            regime_score=70.0,
+        )
+
+        assert engine._spread_position.entry_policy_mode == "LEGACY"
+
+    def test_bear_put_debit_keeps_thesis_first_policy_mode(self, engine, monkeypatch):
+        """Non-bullish-debit spreads should preserve the global thesis-first mode."""
+        monkeypatch.setattr(config, "VASS_EXIT_POLICY_MODE", "THESIS_FIRST")
+
+        long_leg = OptionContract(
+            symbol="QQQ 271231P00305000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=305.0,
+            expiry="2027-12-31",
+            delta=-0.45,
+            bid=5.20,
+            ask=5.40,
+            mid_price=5.30,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        short_leg = OptionContract(
+            symbol="QQQ 271231P00300000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=-0.30,
+            bid=3.00,
+            ask=3.20,
+            mid_price=3.10,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        engine._pending_spread_long_leg = long_leg
+        engine._pending_spread_short_leg = short_leg
+        engine._pending_spread_type = "BEAR_PUT_DEBIT"
+        engine._pending_net_debit = 2.20
+        engine._pending_max_profit = 2.80
+        engine._pending_spread_width = 5.0
+        engine._pending_num_contracts = 8
+        engine._pending_entry_score = 3.8
+
+        engine.register_spread_entry(
+            long_leg_fill_price=5.30,
+            short_leg_fill_price=3.10,
+            entry_time="10:45:00",
+            current_date="2027-01-15",
+            regime_score=40.0,
+        )
+
+        assert engine._spread_position.entry_policy_mode == "THESIS_FIRST"
+
     def test_spread_fill_backfills_missing_approved_lifecycle(self, engine):
         """Spread fill should backfill APPROVED telemetry when the original approval row is missing."""
         lifecycle = []
