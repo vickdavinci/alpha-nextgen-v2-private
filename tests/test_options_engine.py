@@ -4877,6 +4877,46 @@ class TestNeutralityExit:
 
         assert result is None
 
+    def test_bull_debit_day4_promotion_enables_thesis_mode(
+        self, engine, long_leg, short_leg, monkeypatch
+    ):
+        """Bull call debits should promote into thesis mode after day 4 once they earn it."""
+        from types import SimpleNamespace
+
+        self._make_spread(engine, "BULL_CALL", 2.50, long_leg, short_leg)
+        engine._spread_position.entry_time = "2027-01-01 10:00:00"
+        engine._spread_position.entry_underlying_price = 100.0
+        engine._spread_position.entry_policy_mode = "LEGACY"
+        engine._spread_position.highest_pnl_max_profit_pct = 0.18
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 1, 5, 15, 45, 0),
+            Portfolio=SimpleNamespace(TotalPortfolioValue=100000.0),
+            qqq_sma20=SimpleNamespace(IsReady=True, Current=SimpleNamespace(Value=99.5)),
+            Log=lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(config, "VASS_EXIT_POLICY_MODE", "THESIS_FIRST")
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_HOLD_DAYS", 4)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_TIME", "15:45")
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_PROGRESS_PCT", 0.15)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MAX_DRAWDOWN_PCT", 0.015)
+        monkeypatch.setattr(
+            config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_CURRENT_PNL_PCT", -0.10
+        )
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=6.05,
+            short_leg_price=3.90,
+            regime_score=64.0,
+            vix_current=14.0,
+            current_dte=20,
+            underlying_price=99.2,
+        )
+
+        assert result is None
+        assert engine._spread_position.entry_policy_mode == "THESIS_FIRST"
+
     def test_bull_debit_qqq_invalidation_developed_trade_keeps_existing_threshold(
         self, engine, long_leg, short_leg, monkeypatch
     ):

@@ -1214,6 +1214,127 @@ def check_spread_exit_signals_impl(
         mfe_eval_pnl = tradeable_pnl if is_bearish_debit_spread else pnl
         mfe_eval_pnl_pct = tradeable_pnl_pct if is_bearish_debit_spread else pnl_pct
 
+        if (
+            exit_reason is None
+            and is_bullish_debit_spread
+            and not thesis_first_mode
+            and vass_exit_policy_mode == "THESIS_FIRST"
+            and bool(getattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_ENABLED", False))
+            and self.algorithm is not None
+        ):
+            try:
+                entry_dt = datetime.strptime(spread.entry_time[:19], "%Y-%m-%d %H:%M:%S")
+                held_days = (self.algorithm.Time.date() - entry_dt.date()).days
+                review_days = int(
+                    getattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_HOLD_DAYS", 4)
+                )
+                review_time = str(
+                    getattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_TIME", "15:45")
+                )
+                review_hour, review_minute = [int(x) for x in review_time.split(":", 1)]
+                in_review_window = self.algorithm.Time.hour > review_hour or (
+                    self.algorithm.Time.hour == review_hour
+                    and self.algorithm.Time.minute >= review_minute
+                )
+                entry_underlying = float(getattr(spread, "entry_underlying_price", 0.0) or 0.0)
+                current_underlying = float(underlying_price or 0.0)
+                if (
+                    held_days >= review_days
+                    and in_review_window
+                    and entry_underlying > 0
+                    and current_underlying > 0
+                ):
+                    current_underlying_return = (current_underlying / entry_underlying) - 1.0
+                    peak_progress_pnl_pct = float(
+                        getattr(spread, "highest_pnl_max_profit_pct", 0.0) or 0.0
+                    )
+                    bull_confirm_min = float(
+                        getattr(config, "VASS_REGIME_CONFIRMED_BULL_MIN", 57.0)
+                    )
+                    min_progress_pct = float(
+                        getattr(
+                            config,
+                            "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_PROGRESS_PCT",
+                            0.15,
+                        )
+                    )
+                    max_drawdown_pct = float(
+                        getattr(
+                            config,
+                            "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MAX_DRAWDOWN_PCT",
+                            0.015,
+                        )
+                    )
+                    min_current_pnl_pct = float(
+                        getattr(
+                            config,
+                            "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_CURRENT_PNL_PCT",
+                            -0.10,
+                        )
+                    )
+                    require_ma20 = bool(
+                        getattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_REQUIRE_MA20", True)
+                    )
+                    ma20_ok = True
+                    if require_ma20:
+                        qqq_sma20 = getattr(self.algorithm, "qqq_sma20", None)
+                        ma20_ok = bool(
+                            qqq_sma20 is not None
+                            and getattr(qqq_sma20, "IsReady", False)
+                            and current_underlying >= float(qqq_sma20.Current.Value)
+                        )
+
+                    if (
+                        regime_score >= bull_confirm_min
+                        and ma20_ok
+                        and peak_progress_pnl_pct >= min_progress_pct
+                        and current_underlying_return > -max_drawdown_pct
+                        and pnl_pct > min_current_pnl_pct
+                    ):
+                        spread.entry_policy_mode = "THESIS_FIRST"
+                        stored_policy_mode = "THESIS_FIRST"
+                        thesis_first_mode = True
+                        regime_confirmed_no_stop_mode = bool(
+                            getattr(config, "VASS_REGIME_CONFIRMED_NO_STOP", False)
+                        )
+                        regime_confirmed = bool(regime_score >= bull_confirm_min)
+                        thesis_soft_stop_mode = thesis_soft_stop_enabled and (
+                            thesis_first_mode or not thesis_soft_stop_thesis_only
+                        )
+                        disable_tactical_exits_for_thesis = thesis_soft_stop_mode and bool(
+                            getattr(
+                                config, "VASS_BULL_DEBIT_THESIS_ONLY_DISABLE_TACTICAL_EXITS", True
+                            )
+                        )
+                        disable_vix_spike_for_thesis = thesis_soft_stop_mode and bool(
+                            getattr(
+                                config, "VASS_BULL_DEBIT_THESIS_ONLY_DISABLE_VIX_SPIKE_EXITS", True
+                            )
+                        )
+                        if disable_tactical_exits_for_thesis:
+                            profit_target_enabled = False
+                            trail_exit_enabled = False
+                            mfe_lock_enabled = False
+                            neutrality_exit_enabled = False
+                            day4_eod_exit_enabled = False
+                        if regime_confirmed:
+                            if bool(
+                                getattr(config, "VASS_REGIME_CONFIRMED_DISABLE_DEBIT_TRAIL", True)
+                            ):
+                                trail_exit_enabled = False
+                            if bool(
+                                getattr(
+                                    config, "VASS_REGIME_CONFIRMED_DISABLE_DEBIT_MARK_STOP", True
+                                )
+                            ):
+                                mark_stop_enabled = False
+                            if bool(
+                                getattr(config, "VASS_REGIME_CONFIRMED_DISABLE_DEBIT_MFE_T1", True)
+                            ):
+                                mfe_t1_in_confirmed_disabled = True
+            except Exception:
+                pass
+
         # V12.25: Thesis-first invalidation for BULL_CALL_DEBIT based on underlying QQQ.
         # Primary invalidation is underlying breach, not option mark noise.
         if (
