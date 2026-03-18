@@ -2400,9 +2400,7 @@ IC_CW_ABSOLUTE_FLOOR = (
 )
 
 # ── Exit parameters ──
-IC_TARGET_CAPTURE_PCT = (
-    0.40  # Close at 40% of credit captured (V12.37: align target with short-DTE theta harvest)
-)
+IC_TARGET_CAPTURE_PCT = 0.60  # Close at 60% of credit captured (V12.41: restore target — 40% left money on table with 4-8 DTE remaining)
 IC_STOP_LOSS_MULTIPLE = 1.00  # Stop at 1.0× credit lost (V12.37: align realized loss budget to short-DTE weekly condors)
 IC_TIME_EXIT_DTE = 1  # Close by 1 DTE (V12.37: weekly condors hold through the theta sprint, not the final expiry day)
 IC_VIX_SPIKE_EXIT = 33.0  # Emergency exit on VIX spike (V12.26: was 30, VIX 30-32 survivable)
