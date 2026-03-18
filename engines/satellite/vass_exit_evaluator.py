@@ -1654,6 +1654,7 @@ def check_spread_exit_signals_impl(
         if (
             exit_reason is None
             and day4_eod_exit_enabled
+            and not is_bullish_debit_spread
             and not regime_confirmed
             and bool(getattr(config, "VASS_DAY4_EOD_DECISION_ENABLED", False))
             and self.algorithm is not None

@@ -4917,6 +4917,45 @@ class TestNeutralityExit:
         assert result is None
         assert engine._spread_position.entry_policy_mode == "THESIS_FIRST"
 
+    def test_bull_debit_day4_cleanup_is_disabled_before_promotion(
+        self, engine, long_leg, short_leg, monkeypatch
+    ):
+        """Bull call debits should not use the special day-4 EOD cleanup anymore."""
+        from types import SimpleNamespace
+
+        self._make_spread(engine, "BULL_CALL", 2.50, long_leg, short_leg)
+        engine._spread_position.entry_time = "2027-01-01 10:00:00"
+        engine._spread_position.entry_underlying_price = 100.0
+        engine._spread_position.entry_policy_mode = "LEGACY"
+        engine._spread_position.highest_pnl_max_profit_pct = 0.05
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 1, 5, 15, 45, 0),
+            Portfolio=SimpleNamespace(TotalPortfolioValue=100000.0),
+            qqq_sma20=SimpleNamespace(IsReady=True, Current=SimpleNamespace(Value=100.5)),
+            Log=lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(config, "VASS_EXIT_POLICY_MODE", "THESIS_FIRST")
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_ENABLE_PROFIT_TARGET_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MFE_LOCK_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MARK_STOP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_DAY4_EOD_DECISION_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_DAY4_EOD_KEEP_IF_PNL_GT", 0.0)
+        monkeypatch.setattr(config, "SPREAD_HARD_STOP_LOSS_PCT", 0.50)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=5.40,
+            short_leg_price=3.00,
+            regime_score=54.0,
+            vix_current=14.0,
+            current_dte=20,
+            underlying_price=98.8,
+        )
+
+        assert result is None
+        assert engine._spread_position.entry_policy_mode == "LEGACY"
+
     def test_bull_debit_qqq_invalidation_developed_trade_keeps_existing_threshold(
         self, engine, long_leg, short_leg, monkeypatch
     ):
