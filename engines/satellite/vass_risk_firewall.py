@@ -49,7 +49,7 @@ def _is_bearish_spread_fresh_ogp_exempt(self, spread: Optional["SpreadPosition"]
         return False
 
     spread_type = str(getattr(spread, "spread_type", "") or "").upper()
-    if spread_type not in {"BEAR_CALL_CREDIT", "BEAR_PUT_DEBIT"}:
+    if spread_type not in {"BEAR_CALL_CREDIT", "BEAR_PUT", "BEAR_PUT_DEBIT"}:
         return False
 
     regime_score = None
@@ -79,10 +79,19 @@ def _get_ogp_close_all_threshold(self, spread: Optional["SpreadPosition"]) -> fl
         return base_threshold
 
     spread_type = str(getattr(spread, "spread_type", "") or "").upper()
-    if spread_type not in {"BEAR_PUT", "BEAR_PUT_DEBIT"}:
+    if spread_type not in {"BEAR_CALL_CREDIT", "BEAR_PUT", "BEAR_PUT_DEBIT"}:
         return base_threshold
     if not _is_bearish_spread_fresh_ogp_exempt(self, spread):
         return base_threshold
+
+    if spread_type == "BEAR_CALL_CREDIT":
+        return float(
+            getattr(
+                config,
+                "BEAR_CALL_CREDIT_OVERNIGHT_VIX_CLOSE_ALL_BEAR_REGIME",
+                base_threshold,
+            )
+        )
 
     return float(
         getattr(
@@ -366,9 +375,13 @@ def check_overnight_gap_protection_exit_impl(
         if reason is None:
             continue
 
-        if fresh_trade_ogp and _is_bearish_spread_fresh_ogp_exempt(self, spread):
+        if fresh_trade_ogp and spread_type.upper() in {
+            "BEAR_CALL_CREDIT",
+            "BEAR_PUT",
+            "BEAR_PUT_DEBIT",
+        }:
             self.log(
-                "OVERNIGHT_GAP_PROTECTION: Skipping fresh-trade exit for bearish spread in bear regime | "
+                "OVERNIGHT_GAP_PROTECTION: Skipping fresh-trade exit for bearish spread | "
                 f"VIX={current_vix:.1f} | Type={spread_type} | Entry={entry_date} Fresh={is_fresh_trade}",
                 trades_only=True,
             )

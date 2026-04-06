@@ -2581,54 +2581,6 @@ class MainOptionsMixin:
                 self._diag_spread_exit_submit_count += len(assignment_risk_signals)
                 continue
 
-            # V6.22: Transition exit priority - close wrong-way bullish spreads first in STRESS.
-            # Apply this only when anti-churn minimum-hold window has elapsed.
-            if not hold_block_active and bool(
-                getattr(config, "SPREAD_OVERLAY_STRESS_EXIT_ENABLED", False)
-            ):
-                overlay_state = self.options_engine.get_regime_overlay_state(
-                    vix_current=self._current_vix, regime_score=regime_score
-                )
-                spread_type_upper = str(spread.spread_type).upper()
-                is_bullish_spread = spread_type_upper in {
-                    "BULL_CALL",
-                    "BULL_CALL_DEBIT",
-                    "BULL_PUT_CREDIT",
-                }
-                if overlay_state == "STRESS" and is_bullish_spread:
-                    self.Log(
-                        f"SPREAD_OVERLAY_EXIT: Forcing close in STRESS | "
-                        f"Type={spread.spread_type} | VIX={self._current_vix:.1f} | Regime={regime_score:.0f}"
-                    )
-                    self.portfolio_router.receive_signal(
-                        TargetWeight(
-                            symbol=long_symbol,
-                            target_weight=0.0,
-                            source="OPT",
-                            urgency=Urgency.IMMEDIATE,
-                            reason="SPREAD_EXIT: OVERLAY_STRESS_EXIT",
-                            requested_quantity=spread.num_spreads,
-                            metadata={
-                                "spread_close_short": True,
-                                "spread_short_leg_symbol": short_symbol,
-                                "spread_short_leg_quantity": spread.num_spreads,
-                                "spread_key": self._build_spread_runtime_key(spread),
-                                "spread_type": spread_type,
-                                "is_credit_spread": spread_is_credit,
-                                "spread_entry_debit": spread_entry_debit,
-                                "spread_entry_credit": spread_entry_credit,
-                                "exit_type": "OVERLAY_STRESS_EXIT",
-                                "spread_exit_code": "OVERLAY_STRESS_EXIT",
-                                "spread_exit_reason": "OVERLAY_STRESS_EXIT",
-                            },
-                        )
-                    )
-                    self._spread_last_close_submit_at[spread_key] = self.Time
-                    self._record_spread_exit_reason(spread_key, "SPREAD_EXIT: OVERLAY_STRESS_EXIT")
-                    self._diag_spread_exit_signal_count += 1
-                    self._diag_spread_exit_submit_count += 1
-                    continue
-
             exit_signals = self.options_engine.check_spread_exit_signals(
                 long_leg_price=long_leg_price,
                 short_leg_price=short_leg_price,

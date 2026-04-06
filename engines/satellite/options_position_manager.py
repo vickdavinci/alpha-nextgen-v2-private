@@ -298,8 +298,19 @@ def register_spread_entry_impl(
     # V12.27: Freeze policy mode at entry so runtime config flips do not
     # silently alter exit behavior for existing spreads.
     exit_policy_mode = str(getattr(config, "VASS_EXIT_POLICY_MODE", "LEGACY") or "LEGACY").upper()
-    spread.entry_policy_mode = "THESIS_FIRST" if exit_policy_mode == "THESIS_FIRST" else "LEGACY"
     spread_type_upper = str(spread.spread_type or "").upper()
+    is_bullish_debit_spread = spread_type_upper in {
+        "BULL_CALL",
+        "BULL_CALL_DEBIT",
+        SpreadStrategy.BULL_CALL_DEBIT.value,
+    }
+    if is_bullish_debit_spread:
+        spread.entry_policy_mode = "LEGACY"
+    else:
+        spread.entry_policy_mode = (
+            "THESIS_FIRST" if exit_policy_mode == "THESIS_FIRST" else "LEGACY"
+        )
+    spread.active_policy_mode = spread.entry_policy_mode
     is_credit_spread = spread_type_upper in {
         "BULL_PUT_CREDIT",
         "BEAR_CALL_CREDIT",
@@ -319,6 +330,7 @@ def register_spread_entry_impl(
                 theta_first_active = False
         if theta_first_active:
             spread.entry_policy_mode = "CREDIT_THETA_FIRST_ACTIVE"
+            spread.active_policy_mode = spread.entry_policy_mode
 
     self._spread_neutrality_warn_by_key.pop(self._build_spread_key(spread), None)
     self._spread_positions.append(spread)
@@ -345,6 +357,56 @@ def register_spread_entry_impl(
         entry_dt = self.algorithm.Time if self.algorithm is not None else None
     self._record_vass_signature_entry(signature, entry_dt)
     self._record_vass_direction_day_entry(spread_dir, entry_dt)
+
+    algorithm = getattr(self, "algorithm", None)
+    pending_signal_id = str(getattr(self, "_pending_spread_signal_id", "") or "").strip()
+    pending_trace_id = str(getattr(self, "_pending_spread_trace_id", "") or "").strip()
+    pending_direction = str(getattr(self, "_pending_spread_direction", "") or "").strip()
+    pending_strategy = str(getattr(self, "_pending_spread_strategy", "") or "").strip()
+    pending_reason = str(getattr(self, "_pending_spread_signal_reason", "") or "").strip()
+    tracker = getattr(algorithm, "_spread_fill_tracker", None) if algorithm is not None else None
+    if tracker is not None:
+        if not pending_signal_id:
+            pending_signal_id = str(getattr(tracker, "signal_id", "") or "").strip()
+        if not pending_trace_id:
+            pending_trace_id = str(getattr(tracker, "trace_id", "") or "").strip()
+        if not pending_direction:
+            pending_direction = str(getattr(tracker, "direction", "") or "").strip()
+        if not pending_strategy:
+            pending_strategy = str(getattr(tracker, "strategy", "") or "").strip()
+        if not pending_reason:
+            pending_reason = str(getattr(tracker, "signal_reason", "") or "").strip()
+    spread.signal_id = pending_signal_id
+    spread.trace_id = pending_trace_id
+    spread.signal_direction = pending_direction
+    spread.signal_strategy = pending_strategy or str(spread.spread_type or "")
+    spread.signal_reason = pending_reason
+    if (
+        algorithm is not None
+        and pending_signal_id
+        and hasattr(algorithm, "_mark_engine_signal_event")
+        and hasattr(algorithm, "_record_signal_lifecycle_event")
+    ):
+        # Backfill APPROVED only when the original approval lifecycle row never landed.
+        if algorithm._mark_engine_signal_event("APPROVED", pending_signal_id):
+            algorithm._record_signal_lifecycle_event(
+                engine="VASS",
+                event="APPROVED",
+                signal_id=pending_signal_id,
+                trace_id=pending_trace_id,
+                direction=pending_direction,
+                strategy=pending_strategy or str(spread.spread_type or ""),
+                code="R_OK",
+                gate_name="SPREAD_ENTRY_FILL_BACKFILL",
+                reason=pending_reason or "Backfilled on spread fill registration",
+                contract_symbol=self._symbol_str(spread.long_leg.symbol),
+            )
+    elif algorithm is not None and hasattr(algorithm, "Log"):
+        algorithm.Log(
+            "SPREAD_APPROVAL_TELEMETRY_MISSING: "
+            f"Type={spread.spread_type} | Long={self._symbol_str(spread.long_leg.symbol)} | "
+            f"Short={self._symbol_str(spread.short_leg.symbol)}"
+        )
 
     # V2.9: Update trade counter (Bug #4 fix) - Spreads are always swing mode
     self._increment_trade_counter(OptionsMode.SWING)
@@ -397,6 +459,11 @@ def register_spread_entry_impl(
     self._pending_spread_entry_since = None
     self._pending_num_contracts = None
     self._pending_entry_score = None
+    self._pending_spread_signal_id = ""
+    self._pending_spread_trace_id = ""
+    self._pending_spread_direction = ""
+    self._pending_spread_strategy = ""
+    self._pending_spread_signal_reason = ""
     self._rejection_margin_cap = None  # V2.21: Clear on successful fill
     self._rejection_contract_cap = None  # V12.31: Clear adaptive contract cap on successful fill
 
@@ -582,6 +649,31 @@ def remove_spread_position_impl(
             f"Cooldown until {config.OPTIONS_POST_TRADE_COOLDOWN_MINUTES}min after exit",
             trades_only=True,
         )
+        algorithm = getattr(self, "algorithm", None)
+        signal_id = str(getattr(spread, "signal_id", "") or "").strip()
+        if (
+            algorithm is not None
+            and signal_id
+            and hasattr(algorithm, "_mark_engine_signal_event")
+            and hasattr(algorithm, "_record_signal_lifecycle_event")
+        ):
+            if algorithm._mark_engine_signal_event("CLOSED", signal_id):
+                algorithm._record_signal_lifecycle_event(
+                    engine="VASS",
+                    event="CLOSED",
+                    signal_id=signal_id,
+                    trace_id=str(getattr(spread, "trace_id", "") or "").strip(),
+                    direction=str(getattr(spread, "signal_direction", "") or "").strip(),
+                    strategy=str(
+                        getattr(spread, "signal_strategy", "") or getattr(spread, "spread_type", "")
+                    ).strip(),
+                    code="R_OK",
+                    gate_name="SPREAD_POSITION_REMOVED",
+                    reason=str(
+                        getattr(spread, "signal_reason", "") or "Spread position removed"
+                    ).strip(),
+                    contract_symbol=self._symbol_str(spread.long_leg.symbol),
+                )
         return spread
     return None
 

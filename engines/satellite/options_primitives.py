@@ -123,21 +123,47 @@ class OptionContract:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "OptionContract":
         """Deserialize from persistence."""
+        required_fields = [
+            "symbol",
+            "direction",
+            "strike",
+            "expiry",
+            "delta",
+            "bid",
+            "ask",
+            "mid_price",
+            "open_interest",
+            "days_to_expiry",
+        ]
+        missing_fields = [field for field in required_fields if data.get(field) is None]
+        if missing_fields:
+            raise ValueError(
+                "Corrupted OptionContract persistence: missing required fields "
+                + ", ".join(missing_fields)
+            )
+
+        try:
+            direction = OptionDirection(data.get("direction", OptionDirection.CALL.value))
+        except Exception as exc:
+            raise ValueError(
+                f"Corrupted OptionContract persistence: invalid direction {data.get('direction')!r}"
+            ) from exc
+
         return cls(
-            symbol=data["symbol"],
-            underlying=data.get("underlying", "QQQ"),
-            direction=OptionDirection(data["direction"]),
-            strike=data["strike"],
-            expiry=data["expiry"],
-            delta=data["delta"],
-            gamma=data.get("gamma", 0.0),  # V2.1: Default for backwards compat
-            vega=data.get("vega", 0.0),  # V2.1: Default for backwards compat
-            theta=data.get("theta", 0.0),  # V2.1: Default for backwards compat
-            bid=data["bid"],
-            ask=data["ask"],
-            mid_price=data["mid_price"],
-            open_interest=data["open_interest"],
-            days_to_expiry=data["days_to_expiry"],
+            symbol=str(data.get("symbol", "")),
+            underlying=str(data.get("underlying", "QQQ")),
+            direction=direction,
+            strike=float(data.get("strike", 0.0)),
+            expiry=str(data.get("expiry", "")),
+            delta=float(data.get("delta", 0.0)),
+            gamma=float(data.get("gamma", 0.0)),  # V2.1: Default for backwards compat
+            vega=float(data.get("vega", 0.0)),  # V2.1: Default for backwards compat
+            theta=float(data.get("theta", 0.0)),  # V2.1: Default for backwards compat
+            bid=float(data.get("bid", 0.0)),
+            ask=float(data.get("ask", 0.0)),
+            mid_price=float(data.get("mid_price", 0.0)),
+            open_interest=int(data.get("open_interest", 0)),
+            days_to_expiry=int(data.get("days_to_expiry", 0)),
         )
 
 
@@ -223,6 +249,12 @@ class SpreadPosition:
     entry_policy_mode: Optional[
         str
     ] = None  # V12.27: freeze exit-policy mode at entry to avoid mid-run config drift
+    active_policy_mode: Optional[
+        str
+    ] = None  # V12.40: current runtime policy mode after any later thesis promotion
+    thesis_promoted_at: Optional[
+        str
+    ] = None  # V12.40: timestamp for one-way bull-debit thesis promotion
     is_closing: bool = False  # V2.12 Fix #2: Prevent duplicate exit signals
     highest_pnl_pct: float = 0.0  # V9.4: Track high-water mark for trailing stop
     highest_pnl_max_profit_pct: float = 0.0  # V10.15: MFE as % of max profit
@@ -230,6 +262,11 @@ class SpreadPosition:
     thesis_soft_stop_streak: int = 0  # V12.27: consecutive thesis soft-stop breach bars
     assignment_incident_active: bool = False  # V12.28: idempotent partial-assignment lifecycle
     assignment_incident_id: Optional[str] = None  # V12.28: stable incident key for recovery
+    signal_id: str = ""
+    trace_id: str = ""
+    signal_direction: str = ""
+    signal_strategy: str = ""
+    signal_reason: str = ""
 
     @property
     def profit_target(self) -> float:
@@ -261,6 +298,8 @@ class SpreadPosition:
             "entry_vix": self.entry_vix,
             "entry_underlying_price": self.entry_underlying_price,
             "entry_policy_mode": self.entry_policy_mode,
+            "active_policy_mode": self.active_policy_mode,
+            "thesis_promoted_at": self.thesis_promoted_at,
             "is_closing": self.is_closing,
             "highest_pnl_pct": self.highest_pnl_pct,
             "highest_pnl_max_profit_pct": self.highest_pnl_max_profit_pct,
@@ -268,6 +307,11 @@ class SpreadPosition:
             "thesis_soft_stop_streak": self.thesis_soft_stop_streak,
             "assignment_incident_active": self.assignment_incident_active,
             "assignment_incident_id": self.assignment_incident_id,
+            "signal_id": self.signal_id,
+            "trace_id": self.trace_id,
+            "signal_direction": self.signal_direction,
+            "signal_strategy": self.signal_strategy,
+            "signal_reason": self.signal_reason,
         }
 
     @classmethod
@@ -287,6 +331,8 @@ class SpreadPosition:
             entry_vix=data.get("entry_vix"),
             entry_underlying_price=data.get("entry_underlying_price"),
             entry_policy_mode=data.get("entry_policy_mode"),
+            active_policy_mode=data.get("active_policy_mode"),
+            thesis_promoted_at=data.get("thesis_promoted_at"),
             is_closing=data.get("is_closing", False),  # V2.12: Default False for backwards compat
             highest_pnl_pct=data.get("highest_pnl_pct", 0.0),  # V9.4: Trailing stop HWM
             highest_pnl_max_profit_pct=data.get("highest_pnl_max_profit_pct", 0.0),
@@ -294,6 +340,11 @@ class SpreadPosition:
             thesis_soft_stop_streak=int(data.get("thesis_soft_stop_streak", 0) or 0),
             assignment_incident_active=bool(data.get("assignment_incident_active", False)),
             assignment_incident_id=data.get("assignment_incident_id"),
+            signal_id=str(data.get("signal_id", "") or ""),
+            trace_id=str(data.get("trace_id", "") or ""),
+            signal_direction=str(data.get("signal_direction", "") or ""),
+            signal_strategy=str(data.get("signal_strategy", "") or ""),
+            signal_reason=str(data.get("signal_reason", "") or ""),
         )
 
 
@@ -342,6 +393,11 @@ class SpreadFillTracker:
     # Tracker metadata
     created_at: Optional[str] = None
     spread_type: Optional[str] = None  # "BULL_CALL" or "BEAR_PUT"
+    signal_id: str = ""
+    trace_id: str = ""
+    direction: str = ""
+    strategy: str = ""
+    signal_reason: str = ""
 
     def record_long_fill(self, price: float, qty: int, time: str) -> None:
         """Record long leg fill (accumulates for partial fills)."""
@@ -441,6 +497,19 @@ class SpreadFillTracker:
             "long_leg_symbol": self.long_leg_symbol,
             "short_leg_symbol": self.short_leg_symbol,
             "expected_quantity": self.expected_quantity,
+            "timeout_minutes": self.timeout_minutes,
+            "spread_type": self.spread_type or "",
+            "signal_id": self.signal_id,
+            "trace_id": self.trace_id,
+            "direction": self.direction,
+            "strategy": self.strategy,
+            "signal_reason": self.signal_reason,
+            "long_fill_price": self.long_fill_price,
+            "long_fill_qty": self.long_fill_qty,
+            "long_fill_time": self.long_fill_time,
+            "short_fill_price": self.short_fill_price,
+            "short_fill_qty": self.short_fill_qty,
+            "short_fill_time": self.short_fill_time,
             "long_fill": f"${self.long_fill_price:.2f} x{self.long_fill_qty}"
             if self.is_long_filled()
             else "PENDING",
@@ -451,6 +520,41 @@ class SpreadFillTracker:
             "quantities_match": self.quantities_match() if self.is_complete() else False,
             "created_at": self.created_at,
         }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SpreadFillTracker":
+        """Deserialize persisted spread fill tracker state."""
+        return cls(
+            long_leg_symbol=str(data.get("long_leg_symbol", "") or ""),
+            short_leg_symbol=str(data.get("short_leg_symbol", "") or ""),
+            expected_quantity=int(data.get("expected_quantity", 0) or 0),
+            timeout_minutes=int(data.get("timeout_minutes", 5) or 5),
+            long_fill_price=(
+                float(data.get("long_fill_price"))
+                if data.get("long_fill_price") is not None
+                else None
+            ),
+            long_fill_qty=(
+                int(data.get("long_fill_qty")) if data.get("long_fill_qty") is not None else None
+            ),
+            long_fill_time=data.get("long_fill_time"),
+            short_fill_price=(
+                float(data.get("short_fill_price"))
+                if data.get("short_fill_price") is not None
+                else None
+            ),
+            short_fill_qty=(
+                int(data.get("short_fill_qty")) if data.get("short_fill_qty") is not None else None
+            ),
+            short_fill_time=data.get("short_fill_time"),
+            created_at=data.get("created_at"),
+            spread_type=data.get("spread_type"),
+            signal_id=str(data.get("signal_id", "") or ""),
+            trace_id=str(data.get("trace_id", "") or ""),
+            direction=str(data.get("direction", "") or ""),
+            strategy=str(data.get("strategy", "") or ""),
+            signal_reason=str(data.get("signal_reason", "") or ""),
+        )
 
 
 @dataclass

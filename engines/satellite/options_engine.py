@@ -243,6 +243,11 @@ class OptionsEngine:
         self._pending_spread_width: Optional[float] = None
         self._pending_spread_entry_vix: Optional[float] = None
         self._pending_spread_entry_since: Optional[datetime] = None
+        self._pending_spread_signal_id: str = ""
+        self._pending_spread_trace_id: str = ""
+        self._pending_spread_direction: str = ""
+        self._pending_spread_strategy: str = ""
+        self._pending_spread_signal_reason: str = ""
 
         # V2.3 FIX: Prevent order spam - track failed entry attempts
         self._entry_attempted_today: bool = False
@@ -380,6 +385,20 @@ class OptionsEngine:
             elif is_live:
                 self.algorithm.Log(text)
             # In backtest mode with trades_only=False, skip logging (silent)
+
+    def _parse_hhmm_to_minutes(self, hhmm: str, default_minutes: int) -> int:
+        """Parse HH:MM into minutes-from-midnight; fallback to default on parse failure."""
+        try:
+            parts = str(hhmm).split(":")
+            if len(parts) != 2:
+                return default_minutes
+            hh = int(parts[0])
+            mm = int(parts[1])
+            if hh < 0 or hh > 23 or mm < 0 or mm > 59:
+                return default_minutes
+            return hh * 60 + mm
+        except Exception:
+            return default_minutes
 
     def _symbol_str(self, symbol) -> str:
         """Normalize QC Symbol/string-like values to plain string for TargetWeight."""
@@ -2984,12 +3003,30 @@ class OptionsEngine:
         self,
         vix_current: Optional[float] = None,
         iv_rank: Optional[float] = None,
+        strategy: Optional[Any] = None,
     ) -> float:
         """
         Return IV-adaptive minimum credit/width ratio for credit spread quality gating.
 
         Uses the same IV environment source as VASS routing to avoid route/gate mismatches.
         """
+        strategy_value = str(getattr(strategy, "value", strategy) or "").upper()
+        if strategy_value == "BEAR_CALL_CREDIT":
+            if (
+                self._resolve_vass_quality_iv_environment(vix_current=vix_current, iv_rank=iv_rank)
+                == "HIGH"
+            ):
+                return float(
+                    getattr(config, "BEAR_CALL_CREDIT_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV", 0.30)
+                )
+            if (
+                self._resolve_vass_quality_iv_environment(vix_current=vix_current, iv_rank=iv_rank)
+                == "MEDIUM"
+            ):
+                return float(
+                    getattr(config, "BEAR_CALL_CREDIT_MIN_CREDIT_TO_WIDTH_PCT_MEDIUM_IV", 0.33)
+                )
+            return float(getattr(config, "BEAR_CALL_CREDIT_MIN_CREDIT_TO_WIDTH_PCT", 0.35))
         iv_env = self._resolve_vass_quality_iv_environment(vix_current=vix_current, iv_rank=iv_rank)
         if iv_env == "HIGH":
             return float(getattr(config, "CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV", 0.30))
@@ -3182,29 +3219,43 @@ class OptionsEngine:
         iv_rank: Optional[float] = None,
         spread_type: Optional[str] = None,
     ) -> float:
-        """Resolve adaptive debit/width cap by current VIX band."""
+        """Resolve adaptive debit/width cap by current VIX band.
+
+        V12.33: BEAR_PUT uses a dedicated cap table that reflects put-skew
+        economics (higher VIX → steeper skew → higher natural D/W).
+        """
         spread_type_upper = str(spread_type or "").upper()
         is_bear_put = spread_type_upper in {"BEAR_PUT", "BEAR_PUT_DEBIT"}
         if vix_level is None:
             iv_env = self._resolve_vass_quality_iv_environment(
                 vix_current=vix_level, iv_rank=iv_rank
             )
+            if is_bear_put:
+                if iv_env == "HIGH":
+                    return float(getattr(config, "BEAR_PUT_DW_CAP_ELEVATED", 0.48))
+                return float(getattr(config, "BEAR_PUT_DW_CAP_NORMAL", 0.46))
             if iv_env == "LOW":
                 cap = float(getattr(config, "SPREAD_DW_CAP_COMPRESSED", 0.48))
             elif iv_env == "HIGH":
                 cap = float(getattr(config, "SPREAD_DW_CAP_ELEVATED", 0.36))
             else:
                 cap = float(getattr(config, "SPREAD_DW_CAP_NORMAL", 0.42))
-            if is_bear_put and iv_env != "LOW":
-                cap = min(
-                    float(getattr(config, "BEAR_PUT_SPREAD_DW_CAP_MAX", cap)),
-                    cap + float(getattr(config, "BEAR_PUT_SPREAD_DW_CAP_BUMP", 0.0) or 0.0),
-                )
             return cap
         try:
             vix = float(vix_level)
         except Exception:
+            if is_bear_put:
+                return float(getattr(config, "BEAR_PUT_DW_CAP_NORMAL", 0.46))
             return float(getattr(config, "SPREAD_DW_CAP_NORMAL", 0.42))
+        if is_bear_put:
+            if vix > 35:
+                return float(getattr(config, "BEAR_PUT_DW_CAP_PANIC", 0.50))
+            if vix >= 25:
+                return float(getattr(config, "BEAR_PUT_DW_CAP_HIGH", 0.52))
+            iv_env = self._resolve_vass_quality_iv_environment(vix_current=vix, iv_rank=iv_rank)
+            if iv_env == "HIGH":
+                return float(getattr(config, "BEAR_PUT_DW_CAP_ELEVATED", 0.48))
+            return float(getattr(config, "BEAR_PUT_DW_CAP_NORMAL", 0.46))
         if vix > 35:
             cap = float(getattr(config, "SPREAD_DW_CAP_PANIC", 0.28))
         elif vix >= 25:
@@ -3217,11 +3268,6 @@ class OptionsEngine:
                 cap = float(getattr(config, "SPREAD_DW_CAP_ELEVATED", 0.36))
             else:
                 cap = float(getattr(config, "SPREAD_DW_CAP_NORMAL", 0.42))
-        if is_bear_put:
-            cap = min(
-                float(getattr(config, "BEAR_PUT_SPREAD_DW_CAP_MAX", cap)),
-                cap + float(getattr(config, "BEAR_PUT_SPREAD_DW_CAP_BUMP", 0.0) or 0.0),
-            )
         return cap
 
     def _get_spread_absolute_debit_cap(self, vix_level: Optional[float], width: float) -> float:
@@ -4049,6 +4095,7 @@ class OptionsEngine:
         overlay_state: Optional[str] = None,
         iv_rank: Optional[float] = None,
         regime_score: Optional[float] = None,
+        current_vix: Optional[float] = None,
     ) -> Tuple[Optional[SpreadStrategy], int, int, bool]:
         """Resolve VASS route including EARLY_STRESS strategy remap."""
         if getattr(config, "VASS_ENABLED", True) and self.is_iv_sensor_ready():
@@ -4058,6 +4105,7 @@ class OptionsEngine:
                 overlay_state=overlay_state,
                 regime_score=regime_score,
                 iv_environment=iv_environment,
+                current_vix=current_vix,
                 spread_strategy_enum=SpreadStrategy,
                 is_credit_strategy_func=self.is_credit_strategy,
             )
@@ -4203,6 +4251,7 @@ class OptionsEngine:
         vix_intraday_change_pct: float,
         current_hour: int,
         current_minute: int,
+        transition_ctx: Optional[Dict[str, Any]] = None,
         is_eod_scan: bool = False,
     ) -> Tuple[bool, str]:
         """Swing-mode entry filters delegated to VASSEntryEngine."""
@@ -4213,6 +4262,7 @@ class OptionsEngine:
             vix_intraday_change_pct=vix_intraday_change_pct,
             current_hour=current_hour,
             current_minute=current_minute,
+            transition_ctx=transition_ctx,
             enforce_time_window=not bool(is_eod_scan),
         )
 
@@ -4792,6 +4842,11 @@ class OptionsEngine:
         self._pending_spread_entry_since = None
         self._pending_num_contracts = None
         self._pending_entry_score = None
+        self._pending_spread_signal_id = ""
+        self._pending_spread_trace_id = ""
+        self._pending_spread_direction = ""
+        self._pending_spread_strategy = ""
+        self._pending_spread_signal_reason = ""
         self.log(
             "OPT_MACRO_RECOVERY: Pending spread entry cancelled | Retry allowed",
             trades_only=True,
@@ -4848,6 +4903,11 @@ class OptionsEngine:
                 "short_leg_symbol": self._symbol_str(self._pending_spread_short_leg.symbol),
                 "expected_quantity": int(self._pending_num_contracts or 1),
                 "spread_type": self._pending_spread_type,
+                "signal_id": str(self._pending_spread_signal_id or ""),
+                "trace_id": str(self._pending_spread_trace_id or ""),
+                "direction": str(self._pending_spread_direction or ""),
+                "strategy": str(self._pending_spread_strategy or ""),
+                "signal_reason": str(self._pending_spread_signal_reason or ""),
             }
 
         # Fallback: check IC pending seeds
@@ -4887,6 +4947,11 @@ class OptionsEngine:
         self._pending_spread_entry_since = None
         self._pending_num_contracts = None
         self._pending_entry_score = None
+        self._pending_spread_signal_id = ""
+        self._pending_spread_trace_id = ""
+        self._pending_spread_direction = ""
+        self._pending_spread_strategy = ""
+        self._pending_spread_signal_reason = ""
         self._pending_stop_pct = None
         self._pending_stop_price = None
         self._pending_target_price = None

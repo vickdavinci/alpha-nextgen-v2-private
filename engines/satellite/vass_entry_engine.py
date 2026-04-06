@@ -369,6 +369,7 @@ class VASSEntryEngine:
         if not bool(getattr(config, "VASS_REGIME_BREAK_EXIT_ENABLED", False)):
             return None
         ceiling = float(getattr(config, "VASS_REGIME_BREAK_BEAR_CEILING", 50.0))
+        ceiling += float(getattr(config, "VASS_REGIME_BREAK_BEAR_CEILING_CREDIT_BUFFER", 0.0))
         if regime_score > ceiling:
             return (
                 "R_VASS_BEAR_CREDIT_REGIME_BLOCK",
@@ -420,6 +421,7 @@ class VASSEntryEngine:
         *,
         strategy: Any,
         iv_environment: str,
+        current_vix: Optional[float] = None,
         algorithm: Any,
         host: Any,
     ) -> bool:
@@ -428,6 +430,9 @@ class VASSEntryEngine:
         if str(iv_environment or "").upper() != "HIGH":
             return False
         if strategy_value != "BULL_CALL_DEBIT":
+            return False
+        min_credit_vix = float(getattr(config, "BULL_PUT_CREDIT_MIN_VIX_FOR_ENTRY", 0.0) or 0.0)
+        if current_vix is not None and min_credit_vix > 0.0 and float(current_vix) < min_credit_vix:
             return False
         if algorithm is not None:
             algorithm.Log(
@@ -526,6 +531,7 @@ class VASSEntryEngine:
         overlay_state: Optional[str],
         regime_score: Optional[float],
         iv_environment: str,
+        current_vix: Optional[float],
         spread_strategy_enum: Any,
         is_credit_strategy_func: Callable[[Any], bool],
     ) -> Tuple[Any, int, int, bool]:
@@ -537,6 +543,21 @@ class VASSEntryEngine:
             is_intraday=False,
             spread_strategy_enum=spread_strategy_enum,
         )
+        min_credit_vix = float(getattr(config, "BULL_PUT_CREDIT_MIN_VIX_FOR_ENTRY", 0.0) or 0.0)
+        if (
+            direction == "BULLISH"
+            and strategy == spread_strategy_enum.BULL_PUT_CREDIT
+            and current_vix is not None
+            and min_credit_vix > 0.0
+            and float(current_vix) < min_credit_vix
+        ):
+            self._log(
+                "VASS_LOW_VIX_CREDIT_REROUTE: BULL_PUT_CREDIT->BULL_CALL_DEBIT | "
+                f"VIX={float(current_vix):.1f} < {min_credit_vix:.1f}"
+            )
+            strategy = spread_strategy_enum.BULL_CALL_DEBIT
+            dte_min = int(getattr(config, "VASS_MEDIUM_IV_DTE_MIN", dte_min))
+            dte_max = int(getattr(config, "VASS_MEDIUM_IV_DTE_MAX", dte_max))
         overlay = str(overlay_state or "").upper()
         if overlay == "EARLY_STRESS":
             if (
@@ -804,6 +825,7 @@ class VASSEntryEngine:
         vix_intraday_change_pct: float,
         current_hour: int,
         current_minute: int,
+        transition_ctx: Optional[Dict[str, Any]] = None,
         enforce_time_window: bool = True,
     ) -> Tuple[bool, str]:
         """Simple intraday filters for swing-mode entries."""
@@ -817,10 +839,28 @@ class VASSEntryEngine:
         if enforce_time_window and not (start_minutes <= time_minutes <= end_minutes):
             return False, "TIME_WINDOW"
 
+        transition_overlay = str((transition_ctx or {}).get("transition_overlay", "") or "").upper()
+        try:
+            transition_delta = float((transition_ctx or {}).get("delta", 0.0) or 0.0)
+        except Exception:
+            transition_delta = 0.0
+
         if abs(spy_gap_pct) > config.SWING_GAP_THRESHOLD:
             if direction == OptionDirection.CALL and spy_gap_pct > 0:
                 return False, f"Gap up {spy_gap_pct:.1f}% - reversal risk for calls"
             if direction == OptionDirection.PUT and spy_gap_pct < 0:
+                allow_deterioration_bypass = bool(
+                    getattr(config, "SWING_PUT_BOUNCE_FILTER_DETERIORATION_BYPASS_ENABLED", True)
+                )
+                deterioration_delta_min = float(
+                    getattr(config, "SWING_PUT_BOUNCE_FILTER_DETERIORATION_DELTA_MIN", 1.0)
+                )
+                if (
+                    allow_deterioration_bypass
+                    and transition_overlay == "DETERIORATION"
+                    and transition_delta <= -deterioration_delta_min
+                ):
+                    return True, ""
                 return False, f"Gap down {spy_gap_pct:.1f}% - bounce risk for puts"
 
         if spy_intraday_change_pct < config.SWING_EXTREME_SPY_DROP:
@@ -1072,9 +1112,14 @@ class VASSEntryEngine:
         overlay_state = host.get_regime_overlay_state(
             vix_current=vix_level_for_vass, regime_score=regime_for_vass
         )
+        try:
+            transition_delta = float(ctx.get("delta", 0.0) or 0.0)
+        except Exception:
+            transition_delta = 0.0
+        resolver_macro_direction = str(macro_direction).upper()
         if (
             resolver_direction is None
-            and str(macro_direction).upper() == "NEUTRAL"
+            and resolver_macro_direction == "NEUTRAL"
             and bool(getattr(config, "VASS_NEUTRAL_FALLBACK_DIRECTION_ENABLED", True))
             and str(overlay_state).upper() != "AMBIGUOUS"
         ):
@@ -1083,10 +1128,6 @@ class VASSEntryEngine:
                 getattr(config, "VASS_NEUTRAL_FALLBACK_DELTA_SOFT_MIN", delta_min)
             )
             delta_soft_min = max(0.0, min(delta_min, delta_soft_min))
-            try:
-                transition_delta = float(ctx.get("delta", 0.0) or 0.0)
-            except Exception:
-                transition_delta = 0.0
             overlay_key = str(overlay_state or "").upper()
             configured_overlays = getattr(
                 config,
@@ -1134,9 +1175,33 @@ class VASSEntryEngine:
                         if not (latest_dir == "BULLISH" and regime_for_vass <= deep_bear_max):
                             resolver_direction = latest_dir
                             infer_mode = f"DIRECTION_MEMORY:{elapsed_min:.0f}m"
+            stable_bear_rescue_enabled = bool(
+                getattr(config, "VASS_NEUTRAL_STABLE_BEAR_RESCUE_ENABLED", True)
+            )
+            stable_bear_score_max = float(
+                getattr(config, "VASS_NEUTRAL_STABLE_BEAR_SCORE_MAX", 49.0)
+            )
+            stable_bear_momentum_max = float(
+                getattr(config, "VASS_NEUTRAL_STABLE_BEAR_MOMENTUM_MAX", -0.008)
+            )
+            current_momentum_roc = float(ctx.get("momentum_roc", 0.0) or 0.0)
+            if (
+                resolver_direction is None
+                and overlay_key == "STABLE"
+                and stable_bear_rescue_enabled
+                and regime_for_vass <= stable_bear_score_max
+                and current_momentum_roc <= stable_bear_momentum_max
+            ):
+                resolver_direction = "BEARISH"
+                infer_mode = "STABLE_LEVEL_BEAR"
+            if resolver_direction is None and overlay_key == "DETERIORATION":
+                resolver_direction = "BEARISH"
+                infer_mode = "OVERLAY_DETERIORATION_BEAR"
             # V12.30: Emit telemetry when neutral fallback infers direction.
             if resolver_direction is not None:
                 if infer_mode is not None and infer_mode.startswith("DIRECTION_MEMORY:"):
+                    resolver_reason = f"{resolver_reason} | VASS_NEUTRAL_FALLBACK_{infer_mode}"
+                elif infer_mode == "OVERLAY_DETERIORATION_BEAR":
                     resolver_reason = f"{resolver_reason} | VASS_NEUTRAL_FALLBACK_{infer_mode}"
                 else:
                     resolver_reason = (
@@ -1157,11 +1222,67 @@ class VASSEntryEngine:
                     },
                     context=ctx,
                 )
+        rescue_overlay = str(overlay_state).upper()
+        rescue_enabled = bool(getattr(config, "VASS_STRESS_BEAR_RESCUE_ENABLED", True))
+        rescue_delta_min = float(getattr(config, "VASS_STRESS_BEAR_RESCUE_DELTA_MIN", 1.0))
+        rescue_score_max = float(getattr(config, "VASS_STRESS_BEAR_RESCUE_SCORE_MAX", 62.0))
+        if (
+            resolver_direction is None
+            and resolver_macro_direction == "NEUTRAL"
+            and rescue_overlay in {"STRESS", "EARLY_STRESS"}
+            and rescue_enabled
+        ):
+            if transition_delta <= -rescue_delta_min and regime_for_vass <= rescue_score_max:
+                resolver_direction = "BEARISH"
+                resolver_reason = (
+                    f"{resolver_reason} | "
+                    f"VASS_NEUTRAL_STRESS_BEAR_RESCUE_DELTA={transition_delta:+.1f}"
+                )
+                host._record_regime_decision(
+                    engine="VASS",
+                    decision="INFER",
+                    strategy_attempted="VASS_DIRECTION",
+                    gate_name="VASS_NEUTRAL_STRESS_BEAR_RESCUE",
+                    threshold_snapshot={
+                        "delta": transition_delta,
+                        "delta_min": rescue_delta_min,
+                        "score_max": rescue_score_max,
+                        "inferred_direction": resolver_direction,
+                        "overlay": rescue_overlay,
+                    },
+                    context=ctx,
+                )
+        if (
+            resolver_direction is None
+            and resolver_macro_direction == "BULLISH"
+            and rescue_overlay == "STRESS"
+            and rescue_enabled
+        ):
+            if transition_delta <= -rescue_delta_min and regime_for_vass <= rescue_score_max:
+                resolver_direction = "BEARISH"
+                resolver_macro_direction = "NEUTRAL"
+                resolver_reason = (
+                    f"{resolver_reason} | " f"VASS_STRESS_BEAR_RESCUE_DELTA={transition_delta:+.1f}"
+                )
+                host._record_regime_decision(
+                    engine="VASS",
+                    decision="INFER",
+                    strategy_attempted="VASS_DIRECTION",
+                    gate_name="VASS_STRESS_BEAR_RESCUE",
+                    threshold_snapshot={
+                        "delta": transition_delta,
+                        "delta_min": rescue_delta_min,
+                        "score_max": rescue_score_max,
+                        "inferred_direction": resolver_direction,
+                        "overlay": str(overlay_state or "").upper(),
+                    },
+                    context=ctx,
+                )
         should_trade, resolved_direction, resolve_reason = host.resolve_trade_signal(
             engine="VASS",
             engine_direction=resolver_direction,
             engine_conviction=resolver_has_conviction,
-            macro_direction=macro_direction,
+            macro_direction=resolver_macro_direction,
             conviction_strength=None,
             overlay_state=overlay_state,
             allow_macro_veto=allow_macro_veto,
@@ -1287,29 +1408,76 @@ class VASSEntryEngine:
             transition_ctx=ctx,
         )
         if block_gate:
+            handoff_enabled = bool(getattr(config, "VASS_DETERIORATION_BEAR_HANDOFF_ENABLED", True))
+            handoff_delta_min = float(
+                getattr(config, "VASS_DETERIORATION_BEAR_HANDOFF_DELTA_MIN", 0.5)
+            )
+            handoff_score_max = float(
+                getattr(config, "VASS_DETERIORATION_BEAR_HANDOFF_SCORE_MAX", 62.0)
+            )
+            handoff_momentum_max = float(
+                getattr(config, "VASS_DETERIORATION_BEAR_HANDOFF_MOMENTUM_MAX", -0.008)
+            )
+            current_effective_score = float(
+                ctx.get("effective_score", regime_for_vass) or regime_for_vass
+            )
+            current_momentum_roc = float(ctx.get("momentum_roc", 0.0) or 0.0)
+            if (
+                str(block_gate) == "VASS_TRANSITION_BLOCK_BULL_ON_DETERIORATION"
+                and resolved_direction == "BULLISH"
+                and not resolver_has_conviction
+                and handoff_enabled
+                and transition_delta <= -handoff_delta_min
+                and current_effective_score <= handoff_score_max
+                and current_momentum_roc <= handoff_momentum_max
+            ):
+                resolved_direction = "BEARISH"
+                resolved_option_dir = OptionDirection.PUT
+                resolve_reason = f"{resolve_reason} | VASS_DETERIORATION_BEAR_HANDOFF"
+                host._record_regime_decision(
+                    engine="VASS",
+                    decision="INFER",
+                    strategy_attempted="VASS_BEARISH",
+                    gate_name="VASS_DETERIORATION_BEAR_HANDOFF",
+                    threshold_snapshot={
+                        "delta": transition_delta,
+                        "delta_min": handoff_delta_min,
+                        "score_max": handoff_score_max,
+                        "momentum_max": handoff_momentum_max,
+                        "effective_score": current_effective_score,
+                        "momentum_roc": current_momentum_roc,
+                    },
+                    context=ctx,
+                )
+                block_gate, block_reason = host.evaluate_transition_policy_block(
+                    engine="VASS",
+                    direction=resolved_option_dir,
+                    transition_ctx=ctx,
+                )
             reason_code = str(block_gate or "R_VASS_TRANSITION_BLOCK")
-            host._record_regime_decision(
-                engine="VASS",
-                decision="BLOCK",
-                strategy_attempted=f"VASS_{resolved_direction}",
-                gate_name=block_gate,
-                context=ctx,
-            )
-            algorithm.Log(
-                f"VASS_TRANSITION_BLOCK: {block_reason} | "
-                f"Eff={float(ctx.get('effective_score', regime_for_vass)):.1f} | "
-                f"Delta={float(ctx.get('delta', 0.0)):+.1f} | "
-                f"MOM={float(ctx.get('momentum_roc', 0.0)):+.2%}"
-            )
-            self._record_vass_drop_event(
-                algorithm=algorithm,
-                reason_code=reason_code,
-                gate_name=str(block_gate or "VASS_TRANSITION_BLOCK"),
-                reason=str(block_reason or "Transition policy blocked VASS direction"),
-                strategy=f"VASS_{resolved_direction}",
-                direction="CALL" if resolved_direction == "BULLISH" else "PUT",
-            )
-            return None
+            if block_gate:
+                host._record_regime_decision(
+                    engine="VASS",
+                    decision="BLOCK",
+                    strategy_attempted=f"VASS_{resolved_direction}",
+                    gate_name=block_gate,
+                    context=ctx,
+                )
+                algorithm.Log(
+                    f"VASS_TRANSITION_BLOCK: {block_reason} | "
+                    f"Eff={float(ctx.get('effective_score', regime_for_vass)):.1f} | "
+                    f"Delta={float(ctx.get('delta', 0.0)):+.1f} | "
+                    f"MOM={float(ctx.get('momentum_roc', 0.0)):+.2%}"
+                )
+                self._record_vass_drop_event(
+                    algorithm=algorithm,
+                    reason_code=reason_code,
+                    gate_name=str(block_gate or "VASS_TRANSITION_BLOCK"),
+                    reason=str(block_reason or "Transition policy blocked VASS direction"),
+                    strategy=f"VASS_{resolved_direction}",
+                    direction="CALL" if resolved_direction == "BULLISH" else "PUT",
+                )
+                return None
 
         if "NEUTRAL_ALIGNED_HALF" in str(resolve_reason):
             size_multiplier *= config.NEUTRAL_ALIGNED_SIZE_MULT
@@ -1515,6 +1683,7 @@ class VASSEntryEngine:
             vix_intraday_change_pct=vix_intraday_change_pct,
             current_hour=algorithm.Time.hour,
             current_minute=algorithm.Time.minute,
+            transition_ctx=transition_ctx,
         )
         if not swing_filters_ok:
             algorithm._diag_vass_block_count += 1
@@ -1543,6 +1712,7 @@ class VASSEntryEngine:
             overlay_state=overlay_state,
             iv_rank=iv_rank,
             regime_score=regime_score,
+            current_vix=current_vix,
         )
         # V12.30: Emit telemetry when high-IV pivot fires.
         if self._last_pivot_from and hasattr(algorithm, "_record_signal_lifecycle_event"):
@@ -1571,6 +1741,7 @@ class VASSEntryEngine:
         if self._should_block_high_iv_bull_debit_route(
             strategy=strategy,
             iv_environment=iv_environment,
+            current_vix=current_vix,
             algorithm=algorithm,
             host=host,
         ):
@@ -1762,18 +1933,19 @@ class VASSEntryEngine:
             )
             signal = algorithm._attach_option_trace_metadata(signal, source="VASS")
             vass_trace_id = signal.metadata.get("trace_id", "") if signal.metadata else ""
-            algorithm._record_signal_lifecycle_event(
-                engine="VASS",
-                event="APPROVED",
-                signal_id=vass_signal_id,
-                trace_id=vass_trace_id,
-                direction=direction.value if direction else "",
-                strategy=strategy.value if strategy else "",
-                code="R_OK",
-                gate_name="VASS_ENTRY",
-                reason=str(signal.reason or ""),
-                contract_symbol=str(signal.symbol),
-            )
+            if algorithm._mark_engine_signal_event("APPROVED", vass_signal_id):
+                algorithm._record_signal_lifecycle_event(
+                    engine="VASS",
+                    event="APPROVED",
+                    signal_id=vass_signal_id,
+                    trace_id=vass_trace_id,
+                    direction=direction.value if direction else "",
+                    strategy=strategy.value if strategy else "",
+                    code="R_OK",
+                    gate_name="VASS_ENTRY",
+                    reason=str(signal.reason or ""),
+                    contract_symbol=str(signal.symbol),
+                )
             signal = algorithm._apply_spread_margin_guard(signal, source_tag="VASS_INTRADAY_SPREAD")
             if signal is None:
                 algorithm._record_signal_lifecycle_event(
@@ -1793,6 +1965,11 @@ class VASSEntryEngine:
                 signal.metadata.get("spread_short_leg_symbol", "") if signal.metadata else ""
             )
             long_symbol = str(signal.symbol) if signal.symbol else ""
+            host._pending_spread_signal_id = str(vass_signal_id or "")
+            host._pending_spread_trace_id = str(vass_trace_id or "")
+            host._pending_spread_direction = direction.value if direction else ""
+            host._pending_spread_strategy = strategy.value if strategy else ""
+            host._pending_spread_signal_reason = str(signal.reason or "")
             if short_symbol and long_symbol:
                 algorithm._pending_spread_orders[short_symbol] = long_symbol
                 algorithm._pending_spread_orders_reverse[long_symbol] = short_symbol
@@ -1972,6 +2149,11 @@ class VASSEntryEngine:
         algorithm = getattr(host, "algorithm", None)
         if algorithm is None:
             return
+        transition_ctx = (
+            algorithm._get_transition_execution_context()
+            if hasattr(algorithm, "_get_transition_execution_context")
+            else host._get_regime_transition_context(regime_score)
+        )
         current_vix = float(getattr(algorithm, "_current_vix", 20.0) or 20.0)
         overlay_state = host.get_regime_overlay_state(
             vix_current=current_vix, regime_score=regime_score
@@ -1982,6 +2164,7 @@ class VASSEntryEngine:
             overlay_state=overlay_state,
             iv_rank=iv_rank,
             regime_score=regime_score,
+            current_vix=current_vix,
         )
         # V12.30: Emit telemetry when high-IV pivot fires.
         if self._last_pivot_from and hasattr(algorithm, "_record_signal_lifecycle_event"):
@@ -2010,6 +2193,7 @@ class VASSEntryEngine:
         if self._should_block_high_iv_bull_debit_route(
             strategy=strategy,
             iv_environment=iv_environment,
+            current_vix=current_vix,
             algorithm=algorithm,
             host=host,
         ):
@@ -2156,6 +2340,7 @@ class VASSEntryEngine:
             vix_intraday_change_pct=vix_intraday_change_pct,
             current_hour=algorithm.Time.hour,
             current_minute=algorithm.Time.minute,
+            transition_ctx=transition_ctx,
             is_eod_scan=is_eod_scan,
         )
         if not swing_filters_ok:
@@ -2306,18 +2491,19 @@ class VASSEntryEngine:
             )
             signal = algorithm._attach_option_trace_metadata(signal, source="VASS")
             vass_trace_id = signal.metadata.get("trace_id", "") if signal.metadata else ""
-            algorithm._record_signal_lifecycle_event(
-                engine="VASS",
-                event="APPROVED",
-                signal_id=vass_signal_id,
-                trace_id=vass_trace_id,
-                direction=direction.value if direction else "",
-                strategy=strategy.value if strategy else "",
-                code="R_OK",
-                gate_name="VASS_ENTRY",
-                reason=str(signal.reason or ""),
-                contract_symbol=str(signal.symbol),
-            )
+            if algorithm._mark_engine_signal_event("APPROVED", vass_signal_id):
+                algorithm._record_signal_lifecycle_event(
+                    engine="VASS",
+                    event="APPROVED",
+                    signal_id=vass_signal_id,
+                    trace_id=vass_trace_id,
+                    direction=direction.value if direction else "",
+                    strategy=strategy.value if strategy else "",
+                    code="R_OK",
+                    gate_name="VASS_ENTRY",
+                    reason=str(signal.reason or ""),
+                    contract_symbol=str(signal.symbol),
+                )
             signal = algorithm._apply_spread_margin_guard(signal, source_tag="VASS_SPREAD")
             if signal is None:
                 algorithm._record_signal_lifecycle_event(
@@ -2338,6 +2524,11 @@ class VASSEntryEngine:
                 signal.metadata.get("spread_short_leg_symbol", "") if signal.metadata else ""
             )
             long_symbol = str(signal.symbol) if signal.symbol else ""
+            host._pending_spread_signal_id = str(vass_signal_id or "")
+            host._pending_spread_trace_id = str(vass_trace_id or "")
+            host._pending_spread_direction = direction.value if direction else ""
+            host._pending_spread_strategy = strategy.value if strategy else ""
+            host._pending_spread_signal_reason = str(signal.reason or "")
             if short_symbol and long_symbol:
                 algorithm._pending_spread_orders[short_symbol] = long_symbol
                 algorithm._pending_spread_orders_reverse[long_symbol] = short_symbol
@@ -2916,7 +3107,10 @@ class VASSEntryEngine:
                 len(short_candidates),
                 int(getattr(config, "VASS_MAX_SHORT_LEG_CANDIDATES", 5)),
             )
-            cw_floor = host._get_effective_credit_to_width_min(vix_current=smoothed_vix)
+            cw_floor = host._get_effective_credit_to_width_min(
+                vix_current=smoothed_vix,
+                strategy=strategy,
+            )
 
             best_credit_pair = None
             fallback_credit_pair = None
@@ -3126,7 +3320,10 @@ class VASSEntryEngine:
                 len(short_candidates),
                 int(getattr(config, "VASS_MAX_SHORT_LEG_CANDIDATES", 5)),
             )
-            cw_floor = host._get_effective_credit_to_width_min(vix_current=smoothed_vix)
+            cw_floor = host._get_effective_credit_to_width_min(
+                vix_current=smoothed_vix,
+                strategy=strategy,
+            )
 
             best_credit_pair = None
             fallback_credit_pair = None

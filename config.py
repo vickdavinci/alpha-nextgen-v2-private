@@ -1039,6 +1039,24 @@ VASS_NEUTRAL_DIRECTION_MEMORY_ENABLED = True  # V12.31: when macro remains neutr
 VASS_NEUTRAL_DIRECTION_MEMORY_MAX_MINUTES = (
     120  # Memory fallback validity window from most recent VASS direction entry stamp.
 )
+VASS_NEUTRAL_STABLE_BEAR_RESCUE_ENABLED = True  # V12.37: in stable neutral tape, allow level-aware bearish rescue for slow-grind bear markets.
+VASS_NEUTRAL_STABLE_BEAR_SCORE_MAX = 49.0  # Only rescue bearish VASS when stable neutral score is already on the bearish side of neutral.
+VASS_NEUTRAL_STABLE_BEAR_MOMENTUM_MAX = (
+    -0.008  # Require still-negative momentum before rescuing bearish VASS in stable neutral tape.
+)
+VASS_STRESS_BEAR_RESCUE_ENABLED = True  # V12.33: in STRESS, let strongly negative transition delta rescue bearish VASS routing from lagging bullish macro.
+VASS_STRESS_BEAR_RESCUE_DELTA_MIN = 0.5  # Minimum negative transition delta required to bias VASS bearish inside bullish+STRESS dead zones.
+VASS_STRESS_BEAR_RESCUE_SCORE_MAX = (
+    65.0  # Only rescue bearish VASS when the transition score is still only mildly bullish.
+)
+VASS_DETERIORATION_BEAR_HANDOFF_ENABLED = True  # V12.37: when bullish VASS is blocked by deterioration, allow a bearish handoff with extra confirmation.
+VASS_DETERIORATION_BEAR_HANDOFF_DELTA_MIN = 0.5  # Minimum negative transition delta required to hand off blocked bullish VASS into bearish routing.
+VASS_DETERIORATION_BEAR_HANDOFF_SCORE_MAX = (
+    62.0  # Only hand off while the effective score is still only mildly bullish.
+)
+VASS_DETERIORATION_BEAR_HANDOFF_MOMENTUM_MAX = (
+    -0.008  # Require still-negative momentum before converting a deterioration-blocked bullish VASS setup into bearish.
+)
 VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT = (
     False  # V10.10 tuning: disable bearish credit fallback while BEAR_PUT gating is rebalanced
 )
@@ -1092,6 +1110,9 @@ VASS_REGIME_CONFIRMED_BEAR_MAX = 43.0  # Disable mark stops when bearish spread 
 VASS_REGIME_BREAK_EXIT_ENABLED = True
 VASS_REGIME_BREAK_BULL_FLOOR = 50.0  # Close bullish spreads when regime falls below this
 VASS_REGIME_BREAK_BEAR_CEILING = 50.0  # Close bearish spreads when regime rises above this
+VASS_REGIME_BREAK_BEAR_CEILING_CREDIT_BUFFER = (
+    1.0  # V12.36: avoid flicker exits on bearish credits just above the 50 ceiling.
+)
 VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT = (
     0.55  # V12.23 C1: lower THESIS_FIRST confirmed target to improve realization.
 )
@@ -1167,8 +1188,11 @@ CREDIT_SPREAD_MAX_LOSS_PCT_EQUITY = (
 )
 CREDIT_SPREAD_SHORT_LEG_DELTA_MIN = 0.25  # Short leg delta range (OTM)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.45  # V6.13 OPT: Improve credit spread constructability
-CREDIT_SPREAD_SHORT_LEG_DELTA_MAX_HIGH_VIX = 0.35  # V10.10: tighten short leg delta in high-IV tape
+CREDIT_SPREAD_SHORT_LEG_DELTA_MAX_HIGH_VIX = (
+    0.40  # V12.33: partially unwind high-IV tightening so quality credits remain constructable.
+)
 CREDIT_SPREAD_SHORT_LEG_HIGH_VIX_THRESHOLD = 25.0
+BULL_PUT_CREDIT_MIN_VIX_FOR_ENTRY = 18.0  # V12.33: below this, route bullish spreads to debits instead of probing low-vol put credits.
 # V12.29: credit-risk exit guard for short-strike pressure near expiry.
 CREDIT_SPREAD_DELTA_EXIT_ENABLED = True
 CREDIT_SPREAD_DELTA_EXIT_THRESHOLD = 0.30
@@ -1200,6 +1224,15 @@ CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_MEDIUM_IV = (
 )
 CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV = (
     0.35  # V12.16: raise high-IV floor to stabilize credit R:R
+)
+BEAR_CALL_CREDIT_MIN_CREDIT_TO_WIDTH_PCT = (
+    0.35  # V12.33: flatter call skew supports slightly lower calm-tape C/W for bear-call credits.
+)
+BEAR_CALL_CREDIT_MIN_CREDIT_TO_WIDTH_PCT_MEDIUM_IV = (
+    0.33  # V12.33: medium-IV bear-call credits can remain attractive below put-credit floors.
+)
+BEAR_CALL_CREDIT_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV = (
+    0.30  # V12.33: high-IV bear-call credits need lower C/W floor than bullish put credits.
 )
 CREDIT_SPREAD_MEDIUM_IV_VIX_THRESHOLD = 20.0  # VIX level for medium-IV tier
 
@@ -1596,6 +1629,7 @@ BEAR_PUT_ASSIGNMENT_HARD_BLOCK_REGIME_MAX = (
 BEAR_PUT_ASSIGNMENT_BULL_BLOCK_REGIME_MIN = (
     55.0  # Enforce short-PUT assignment gate in bullish/neutral-high regimes
 )
+BULL_PUT_CREDIT_ASSIGNMENT_BULL_REGIME_BLOCK_ENABLED = False  # V12.33: do not suppress bullish put-credit entries solely because macro regime is bullish
 BEAR_PUT_ASSIGNMENT_RESELECT_ENABLED = (
     True  # On assignment-gate fail, retry with a farther OTM short PUT from current candidate pool
 )
@@ -1766,6 +1800,14 @@ SPREAD_DTE_MAX = 45  # V2.19: Widened from 21 to 45 to align with VASS_LOW_IV_DT
 SPREAD_DTE_EXIT = 5  # Close by 5 DTE remaining
 VASS_DEBIT_MAX_HOLD_DAYS = 0  # V9.5: disable debit spread time-stop force exit
 VASS_DEBIT_MAX_HOLD_DAYS_LOW_VIX = 0  # V9.5: disable low-VIX debit time-stop override
+# V12.35: BEAR_PUT-specific max hold cap.  Bear moves are fast, mean-reverting
+# spikes — extended holds bleed theta on rich put premiums.  7-day cap forces
+# exits on stale bear theses before time decay dominates.
+VASS_BEAR_PUT_MAX_HOLD_DAYS = 7
+VASS_BEAR_PUT_TIME_STOP_REQUIRE_NON_POSITIVE_PNL = True
+VASS_BEAR_PUT_TIME_STOP_MIN_MFE_MAX_PROFIT_PCT = (
+    0.25  # Skip BEAR_PUT time-stop if trade stayed profitable and reached meaningful MFE.
+)
 VASS_DEBIT_LOW_VIX_THRESHOLD = 16.0
 
 # V10.5: Day-4 EOD decision for VASS debit spreads
@@ -1800,8 +1842,14 @@ SPREAD_DW_CAP_NORMAL = (
 SPREAD_DW_CAP_COMPRESSED = (
     0.42  # V12.23.1: keep compressed-IV aligned with normal cap after slight D/W loosen.
 )
-BEAR_PUT_SPREAD_DW_CAP_BUMP = 0.04  # V12.31: modest D/W relax for bearish put spreads
-BEAR_PUT_SPREAD_DW_CAP_MAX = 0.46  # V12.31: hard ceiling for bearish put D/W relax
+# V12.33: Per-strategy D/W cap table for BEAR_PUT debit spreads.
+# Put skew inverts the VIX→D/W relationship vs calls: higher VIX → steeper skew → higher
+# natural D/W.  The call-oriented caps (0.28-0.42) choke ~80-95% of viable bear puts in
+# elevated IV.  These caps reflect put-skew economics directly.
+BEAR_PUT_DW_CAP_PANIC = 0.50  # VIX > 35 (call equiv: 0.28)
+BEAR_PUT_DW_CAP_HIGH = 0.52  # 25 <= VIX < 35 (call equiv: 0.32)
+BEAR_PUT_DW_CAP_ELEVATED = 0.48  # VIX < 25, HIGH iv_env (call equiv: 0.38)
+BEAR_PUT_DW_CAP_NORMAL = 0.46  # VIX < 25, normal/compressed (call equiv: 0.42)
 SPREAD_DW_ABSOLUTE_CAP = 2.00  # Max debit dollars on $5 spread in very calm IV
 SPREAD_DW_ABSOLUTE_CAP_VIX = 15.0
 # V12.0: Elastic absolute debit cap (inversely scaled by VIX, bounded).
@@ -1869,6 +1917,14 @@ VASS_MFE_T2_FLOOR_PCT = 0.15  # Lock +15% floor once T2 reached
 VASS_MFE_T2_FLOOR_LOW_VIX = 0.12
 VASS_MFE_T2_FLOOR_MED_VIX = 0.18
 VASS_MFE_T2_FLOOR_HIGH_VIX = 0.25
+# V12.35: BEAR_PUT-specific MFE T2 floor overrides.
+# Put skew drives D/W to 0.46-0.52 for BEAR_PUT vs 0.28-0.42 for BULL_CALL.
+# The generic floors (12-25% of max_profit) protect only 16-20% of the debit paid;
+# these overrides bring profit protection to ~32-35% of debit, matching BULL_CALL
+# economics on a debit-relative basis.
+VASS_MFE_T2_FLOOR_BEAR_PUT_LOW_VIX = 0.35
+VASS_MFE_T2_FLOOR_BEAR_PUT_MED_VIX = 0.40
+VASS_MFE_T2_FLOOR_BEAR_PUT_HIGH_VIX = 0.45
 VASS_TAIL_RISK_CAP_ENABLED = True  # Emergency per-trade account-risk kill switch
 VASS_TAIL_RISK_CAP_PCT_EQUITY = 0.010  # V12.4: tighten cap to 1.0% of portfolio equity
 VASS_TAIL_RISK_CAP_USE_DTE_OVERLAY = True  # V12.6: make cap regime/DTE adaptive
@@ -1936,6 +1992,20 @@ VASS_BULL_DEBIT_QQQ_INVALIDATION_ENABLED = True
 VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_PCT = 0.040
 VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT = 0.039  # V12.31: tuned from 4.0% to 3.9% (earlier thesis-break detection without winner clipping in RCA sample).
 VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_TIME = "15:45"
+VASS_BULL_DEBIT_MFE_DEVELOPED_MIN_PCT = 0.20
+VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_UNDEVELOPED_PCT = 0.039
+VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_UNDEVELOPED_PCT = 0.040
+VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_ENABLED = True
+VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_HOLD_DAYS = 4
+VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_TIME = "15:45"
+VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_REQUIRE_MA20 = True
+VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_PROGRESS_PCT = 0.20
+VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MAX_DRAWDOWN_PCT = 0.015
+VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_CURRENT_PNL_PCT = -0.10
+VASS_BULL_DEBIT_STALE_EXIT_ENABLED = True
+VASS_BULL_DEBIT_STALE_MAX_HOLD_DAYS = 10
+VASS_BULL_DEBIT_STALE_MAX_CURRENT_PNL_PCT = 0.10
+VASS_BULL_DEBIT_STALE_MIN_PROGRESS_PNL_PCT = 0.20
 # V12.27: Thesis-soft-stop for BULL_CALL_DEBIT.
 # Keep hard invalidation/regime-break behavior, but avoid tactical churn exits.
 VASS_BULL_DEBIT_THESIS_SOFT_STOP_ENABLED = (
@@ -1955,6 +2025,13 @@ VASS_BULL_DEBIT_THESIS_ONLY_DISABLE_TACTICAL_EXITS = (
     False  # V12.30: keep tactical rails active for BCD when soft-stop is disabled.
 )
 VASS_BULL_DEBIT_THESIS_ONLY_DISABLE_VIX_SPIKE_EXITS = True
+# V12.35: Underlying-based thesis invalidation for BEAR_PUT_DEBIT exits.
+# Symmetric to BULL_CALL QQQ invalidation but tighter (3.5% vs 3.9%) because
+# IV crush on a rally accelerates put premium decay faster than call decay on drops.
+VASS_BEAR_DEBIT_QQQ_INVALIDATION_ENABLED = True
+VASS_BEAR_DEBIT_QQQ_INVALIDATION_CLOSE_PCT = 0.035
+VASS_BEAR_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT = 0.035
+VASS_BEAR_DEBIT_QQQ_INVALIDATION_CLOSE_TIME = "15:45"
 VASS_RECOVERY_RELAX_ENABLED = False  # V12.11: disabled — fires on ALL bullish entries (not just recovery), silently overrides D/W caps by +9%.
 VASS_RECOVERY_RELAX_DAY_MIN_CHANGE_PCT = -0.05
 VASS_RECOVERY_RELAX_MA20_TOLERANCE_PCT = 0.003
@@ -3359,10 +3436,12 @@ PROTECTIVE_PUTS_MAX_CONTRACTS = (
 # For Swing Mode (5+ DTE), use simple filters instead of Micro Regime
 
 SWING_TIME_WINDOW_START = "10:00"  # Entry window start
-SWING_TIME_WINDOW_END = "14:30"  # Entry window end
+SWING_TIME_WINDOW_END = "15:30"  # Entry window end
 
 # Gap Filter for Swing Mode
 SWING_GAP_THRESHOLD = 1.0  # Skip if SPY gaps > 1.0%
+SWING_PUT_BOUNCE_FILTER_DETERIORATION_BYPASS_ENABLED = True  # V12.33: allow bearish swing puts after a gap-down when transition overlay already confirms deterioration.
+SWING_PUT_BOUNCE_FILTER_DETERIORATION_DELTA_MIN = 0.5  # Minimum negative transition delta required to bypass the gap-down bounce-risk block for puts.
 
 # Extreme Move Filter
 SWING_EXTREME_SPY_DROP = -2.0  # Pause if SPY drops > 2% intraday
@@ -3382,6 +3461,9 @@ SWING_OVERNIGHT_VIX_CLOSE_ALL = 30.0  # Close all spreads if VIX >= 30 at EOD
 SWING_OVERNIGHT_VIX_CLOSE_FRESH = 22.0  # Close fresh spreads if VIX >= 22 at EOD
 BEAR_PUT_OVERNIGHT_VIX_CLOSE_ALL_BEAR_REGIME = (
     40.0  # V12.31: let BEAR_PUT_DEBIT survive elevated bear-regime VIX unless stress is extreme
+)
+BEAR_CALL_CREDIT_OVERNIGHT_VIX_CLOSE_ALL_BEAR_REGIME = (
+    40.0  # V12.37: let BEAR_CALL_CREDIT survive elevated bear-regime VIX unless stress is extreme
 )
 
 # -----------------------------------------------------------------------------

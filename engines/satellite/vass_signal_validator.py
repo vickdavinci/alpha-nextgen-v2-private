@@ -500,12 +500,22 @@ def check_spread_entry_signal_impl(
         self.log("SPREAD: Entry blocked - vol shock active")
         return fail("VOL_SHOCK_BLOCK")
 
-    # Check time window (10:00 AM - 2:30 PM ET)
+    # Check time window (config-driven swing entry window)
     # V3.0: EOD scan at 15:45 bypasses time window — chain is valid at EOD
     time_minutes = current_hour * 60 + current_minute
-    if not is_eod_scan and not (10 * 60 <= time_minutes <= 14 * 60 + 30):
+    start_minutes = self._parse_hhmm_to_minutes(
+        str(getattr(config, "SWING_TIME_WINDOW_START", "10:00")), 10 * 60
+    )
+    end_minutes = self._parse_hhmm_to_minutes(
+        str(getattr(config, "SWING_TIME_WINDOW_END", "14:30")), 14 * 60 + 30
+    )
+    if not is_eod_scan and not (start_minutes <= time_minutes <= end_minutes):
         if not self._swing_time_warning_logged:
-            self.log("SPREAD: Entry blocked - outside time window (10:00-14:30)")
+            self.log(
+                "SPREAD: Entry blocked - outside time window "
+                f"({start_minutes // 60:02d}:{start_minutes % 60:02d}-"
+                f"{end_minutes // 60:02d}:{end_minutes % 60:02d})"
+            )
             self._swing_time_warning_logged = True
         return fail("TIME_WINDOW_BLOCK")
 
@@ -1404,10 +1414,16 @@ def check_credit_spread_entry_signal_impl(
         self.log("CREDIT_SPREAD: Entry blocked - vol shock active")
         return fail("VOL_SHOCK_BLOCK")
 
-    # Check time window (10:00 AM - 2:30 PM ET)
+    # Check time window (config-driven swing entry window)
     # V3.0: EOD scan at 15:45 bypasses time window — chain is valid at EOD
     time_minutes = current_hour * 60 + current_minute
-    if not is_eod_scan and not (10 * 60 <= time_minutes <= 14 * 60 + 30):
+    start_minutes = self._parse_hhmm_to_minutes(
+        str(getattr(config, "SWING_TIME_WINDOW_START", "10:00")), 10 * 60
+    )
+    end_minutes = self._parse_hhmm_to_minutes(
+        str(getattr(config, "SWING_TIME_WINDOW_END", "14:30")), 14 * 60 + 30
+    )
+    if not is_eod_scan and not (start_minutes <= time_minutes <= end_minutes):
         return fail("TIME_WINDOW_BLOCK")
 
     # Validate contracts
@@ -1559,6 +1575,19 @@ def check_credit_spread_entry_signal_impl(
             vix_current=vix_current,
             regime_score=regime_score,
         )
+        if (
+            enforce_assignment_gate
+            and gate_reason == "ASSIGN_GATE_BULL_REGIME"
+            and not bool(
+                getattr(config, "BULL_PUT_CREDIT_ASSIGNMENT_BULL_REGIME_BLOCK_ENABLED", False)
+            )
+        ):
+            enforce_assignment_gate = False
+            self.log(
+                "CREDIT_SPREAD: BULL_PUT bull-regime assignment gate bypassed | "
+                f"Regime={regime_score:.1f} | VIX={vix_current:.1f} | Profile={gate_profile}",
+                trades_only=True,
+            )
         # V12.30: Apply STRESS relax to BULL_PUT_CREDIT (same as BEAR_PUT debit path).
         if (
             enforce_assignment_gate
@@ -1654,7 +1683,9 @@ def check_credit_spread_entry_signal_impl(
             return fail_quality("POP_BELOW_MIN")
 
     min_credit_to_width = self._get_effective_credit_to_width_min(
-        vix_current=vix_current, iv_rank=iv_rank
+        vix_current=vix_current,
+        iv_rank=iv_rank,
+        strategy=strategy,
     )
     if credit_to_width < min_credit_to_width:
         self.log(

@@ -137,7 +137,11 @@ def check_spread_exit_signals_impl(
         else f"Tier={vass_tier} RefVIX={float(vass_ref_vix):.1f}"
     )
     vass_exit_policy_mode = str(getattr(config, "VASS_EXIT_POLICY_MODE", "LEGACY")).upper()
-    stored_policy_mode = str(getattr(spread, "entry_policy_mode", "") or "").upper()
+    stored_policy_mode = str(
+        getattr(spread, "active_policy_mode", None)
+        or getattr(spread, "entry_policy_mode", "")
+        or ""
+    ).upper()
     if stored_policy_mode in {"LEGACY"}:
         thesis_first_mode = False
     elif stored_policy_mode in {"THESIS_FIRST", "CREDIT_THETA_FIRST_ACTIVE"}:
@@ -251,6 +255,12 @@ def check_spread_exit_signals_impl(
     )
     regime_break_bull_floor = float(getattr(config, "VASS_REGIME_BREAK_BULL_FLOOR", 50.0))
     regime_break_bear_ceiling = float(getattr(config, "VASS_REGIME_BREAK_BEAR_CEILING", 50.0))
+    regime_break_bear_credit_buffer = float(
+        getattr(config, "VASS_REGIME_BREAK_BEAR_CEILING_CREDIT_BUFFER", 0.0)
+    )
+    effective_regime_break_bear_ceiling = regime_break_bear_ceiling
+    if is_bearish_spread and is_credit_spread:
+        effective_regime_break_bear_ceiling += max(0.0, regime_break_bear_credit_buffer)
 
     regime_break_reason = None
     if regime_break_enabled:
@@ -258,8 +268,11 @@ def check_spread_exit_signals_impl(
             regime_break_reason = (
                 f"VASS_REGIME_BREAK_BULL: Regime {regime_score:.0f} < {regime_break_bull_floor:.0f}"
             )
-        elif is_bearish_spread and regime_score > regime_break_bear_ceiling:
-            regime_break_reason = f"VASS_REGIME_BREAK_BEAR: Regime {regime_score:.0f} > {regime_break_bear_ceiling:.0f}"
+        elif is_bearish_spread and regime_score > effective_regime_break_bear_ceiling:
+            regime_break_reason = (
+                f"VASS_REGIME_BREAK_BEAR: Regime {regime_score:.0f} > "
+                f"{effective_regime_break_bear_ceiling:.0f}"
+            )
 
     def _profit_target_open_delay_active() -> bool:
         """Gate profit-target exits in the opening minutes to avoid wide opening-book fills."""
@@ -857,7 +870,7 @@ def check_spread_exit_signals_impl(
         exit_reason is None
         and bool(getattr(config, "SPREAD_OVERLAY_STRESS_EXIT_ENABLED", False))
         and not disable_tactical_exits_for_thesis
-        and is_bullish_spread
+        and is_bullish_debit_spread
         and vix_current is not None
     ):
         overlay_state = self.get_regime_overlay_state(
@@ -869,7 +882,12 @@ def check_spread_exit_signals_impl(
                 f"Regime={regime_score:.0f} | VIX={vix_current:.1f}"
             )
 
-    if vix_spike_enabled and exit_reason is None and is_bullish_spread and vix_current is not None:
+    if (
+        vix_spike_enabled
+        and exit_reason is None
+        and is_bullish_debit_spread
+        and vix_current is not None
+    ):
         if vix_current >= vix_spike_level:
             exit_reason = f"VIX_SPIKE_EXIT: VIX {vix_current:.1f} >= {vix_spike_level}"
         elif vix_5d_change is not None and vix_5d_change >= vix_spike_5d:
@@ -1200,6 +1218,193 @@ def check_spread_exit_signals_impl(
         mfe_eval_pnl = tradeable_pnl if is_bearish_debit_spread else pnl
         mfe_eval_pnl_pct = tradeable_pnl_pct if is_bearish_debit_spread else pnl_pct
 
+        if (
+            exit_reason is None
+            and is_bullish_debit_spread
+            and not thesis_first_mode
+            and vass_exit_policy_mode == "THESIS_FIRST"
+            and bool(getattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_ENABLED", False))
+            and self.algorithm is not None
+        ):
+            try:
+                entry_dt = datetime.strptime(spread.entry_time[:19], "%Y-%m-%d %H:%M:%S")
+                held_days = (self.algorithm.Time.date() - entry_dt.date()).days
+                review_days = int(
+                    getattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_HOLD_DAYS", 4)
+                )
+                review_time = str(
+                    getattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_TIME", "15:45")
+                )
+                review_hour, review_minute = [int(x) for x in review_time.split(":", 1)]
+                in_review_window = self.algorithm.Time.hour > review_hour or (
+                    self.algorithm.Time.hour == review_hour
+                    and self.algorithm.Time.minute >= review_minute
+                )
+                entry_underlying = float(getattr(spread, "entry_underlying_price", 0.0) or 0.0)
+                current_underlying = float(underlying_price or 0.0)
+                if (
+                    held_days >= review_days
+                    and in_review_window
+                    and entry_underlying > 0
+                    and current_underlying > 0
+                ):
+                    setattr(
+                        self.algorithm,
+                        "_diag_vass_bull_debit_day4_promotion_checks",
+                        int(
+                            getattr(
+                                self.algorithm,
+                                "_diag_vass_bull_debit_day4_promotion_checks",
+                                0,
+                            )
+                            or 0
+                        )
+                        + 1,
+                    )
+                    current_underlying_return = (current_underlying / entry_underlying) - 1.0
+                    peak_progress_pnl_pct = float(
+                        getattr(spread, "highest_pnl_max_profit_pct", 0.0) or 0.0
+                    )
+                    bull_confirm_min = float(
+                        getattr(config, "VASS_REGIME_CONFIRMED_BULL_MIN", 57.0)
+                    )
+                    min_progress_pct = float(
+                        getattr(
+                            config,
+                            "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_PROGRESS_PCT",
+                            0.15,
+                        )
+                    )
+                    max_drawdown_pct = float(
+                        getattr(
+                            config,
+                            "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MAX_DRAWDOWN_PCT",
+                            0.015,
+                        )
+                    )
+                    min_current_pnl_pct = float(
+                        getattr(
+                            config,
+                            "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_CURRENT_PNL_PCT",
+                            -0.10,
+                        )
+                    )
+                    require_ma20 = bool(
+                        getattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_REQUIRE_MA20", True)
+                    )
+                    ma20_ok = True
+                    if require_ma20:
+                        qqq_sma20 = getattr(self.algorithm, "qqq_sma20", None)
+                        ma20_ok = bool(
+                            qqq_sma20 is not None
+                            and getattr(qqq_sma20, "IsReady", False)
+                            and current_underlying >= float(qqq_sma20.Current.Value)
+                        )
+
+                    if (
+                        regime_score >= bull_confirm_min
+                        and ma20_ok
+                        and peak_progress_pnl_pct >= min_progress_pct
+                        and current_underlying_return > -max_drawdown_pct
+                        and pnl_pct > min_current_pnl_pct
+                    ):
+                        spread.active_policy_mode = "THESIS_FIRST"
+                        if not getattr(spread, "thesis_promoted_at", None):
+                            spread.thesis_promoted_at = self.algorithm.Time.strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            )
+                        setattr(
+                            self.algorithm,
+                            "_diag_vass_bull_debit_day4_promotions",
+                            int(
+                                getattr(
+                                    self.algorithm,
+                                    "_diag_vass_bull_debit_day4_promotions",
+                                    0,
+                                )
+                                or 0
+                            )
+                            + 1,
+                        )
+                        spread_key = self._build_spread_key(spread)
+                        self.log(
+                            "BULL_DEBIT_DAY4_THESIS_PROMOTED: "
+                            f"Key={spread_key} | Policy={spread.entry_policy_mode}->{spread.active_policy_mode} | "
+                            f"Regime={regime_score:.0f} | Peak={peak_progress_pnl_pct:.1%} | "
+                            f"QQQRet={current_underlying_return:.1%} | P&L={pnl_pct:.1%}",
+                            trades_only=True,
+                        )
+                        signal_event_fn = getattr(
+                            self.algorithm, "_record_signal_lifecycle_event", None
+                        )
+                        if callable(signal_event_fn):
+                            signal_event_fn(
+                                engine="VASS",
+                                event="THESIS_PROMOTED",
+                                signal_id=str(
+                                    getattr(spread, "signal_id", "")
+                                    or self._build_spread_key(spread)
+                                ),
+                                trace_id=str(
+                                    getattr(spread, "trace_id", "")
+                                    or self._build_spread_key(spread)
+                                ),
+                                direction=str(getattr(spread, "signal_direction", "") or ""),
+                                strategy=str(
+                                    getattr(spread, "signal_strategy", "")
+                                    or str(spread.spread_type or "")
+                                ),
+                                code="R_THESIS_PROMOTED",
+                                gate_name="BULL_DEBIT_DAY4_THESIS_PROMOTION",
+                                reason=(
+                                    f"Regime={regime_score:.0f} | Peak={peak_progress_pnl_pct:.1%} | "
+                                    f"QQQRet={current_underlying_return:.1%} | P&L={pnl_pct:.1%}"
+                                ),
+                                contract_symbol=self._symbol_str(spread.long_leg.symbol),
+                            )
+                        stored_policy_mode = "THESIS_FIRST"
+                        thesis_first_mode = True
+                        regime_confirmed_no_stop_mode = bool(
+                            getattr(config, "VASS_REGIME_CONFIRMED_NO_STOP", False)
+                        )
+                        regime_confirmed = bool(regime_score >= bull_confirm_min)
+                        thesis_soft_stop_mode = thesis_soft_stop_enabled and (
+                            thesis_first_mode or not thesis_soft_stop_thesis_only
+                        )
+                        disable_tactical_exits_for_thesis = thesis_soft_stop_mode and bool(
+                            getattr(
+                                config, "VASS_BULL_DEBIT_THESIS_ONLY_DISABLE_TACTICAL_EXITS", True
+                            )
+                        )
+                        disable_vix_spike_for_thesis = thesis_soft_stop_mode and bool(
+                            getattr(
+                                config, "VASS_BULL_DEBIT_THESIS_ONLY_DISABLE_VIX_SPIKE_EXITS", True
+                            )
+                        )
+                        if disable_tactical_exits_for_thesis:
+                            profit_target_enabled = False
+                            trail_exit_enabled = False
+                            mfe_lock_enabled = False
+                            neutrality_exit_enabled = False
+                            day4_eod_exit_enabled = False
+                        if regime_confirmed:
+                            if bool(
+                                getattr(config, "VASS_REGIME_CONFIRMED_DISABLE_DEBIT_TRAIL", True)
+                            ):
+                                trail_exit_enabled = False
+                            if bool(
+                                getattr(
+                                    config, "VASS_REGIME_CONFIRMED_DISABLE_DEBIT_MARK_STOP", True
+                                )
+                            ):
+                                mark_stop_enabled = False
+                            if bool(
+                                getattr(config, "VASS_REGIME_CONFIRMED_DISABLE_DEBIT_MFE_T1", True)
+                            ):
+                                mfe_t1_in_confirmed_disabled = True
+            except Exception:
+                pass
+
         # V12.25: Thesis-first invalidation for BULL_CALL_DEBIT based on underlying QQQ.
         # Primary invalidation is underlying breach, not option mark noise.
         if (
@@ -1210,12 +1415,33 @@ def check_spread_exit_signals_impl(
             entry_underlying = float(getattr(spread, "entry_underlying_price", 0.0) or 0.0)
             current_underlying = float(underlying_price or 0.0)
             if entry_underlying > 0 and current_underlying > 0:
-                intraday_pct = float(
-                    getattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT", 0.040)
+                developed_mfe_min_pct = float(
+                    getattr(config, "VASS_BULL_DEBIT_MFE_DEVELOPED_MIN_PCT", 0.20)
                 )
-                close_pct = float(
-                    getattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_PCT", 0.035)
-                )
+                highest_pnl_pct = float(getattr(spread, "highest_pnl_max_profit_pct", 0.0) or 0.0)
+                is_developed_trade = highest_pnl_pct >= developed_mfe_min_pct
+                if is_developed_trade:
+                    intraday_pct = float(
+                        getattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT", 0.040)
+                    )
+                    close_pct = float(
+                        getattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_PCT", 0.035)
+                    )
+                else:
+                    intraday_pct = float(
+                        getattr(
+                            config,
+                            "VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_UNDEVELOPED_PCT",
+                            0.025,
+                        )
+                    )
+                    close_pct = float(
+                        getattr(
+                            config,
+                            "VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_UNDEVELOPED_PCT",
+                            0.0275,
+                        )
+                    )
                 intraday_floor = entry_underlying * (1.0 - max(0.0, intraday_pct))
                 close_floor = entry_underlying * (1.0 - max(0.0, close_pct))
                 if current_underlying <= intraday_floor:
@@ -1241,6 +1467,51 @@ def check_spread_exit_signals_impl(
                         exit_reason = (
                             f"QQQ_INVALIDATION_CLOSE: QQQ {current_underlying:.2f} <= "
                             f"{close_floor:.2f} ({close_pct:.1%} below entry {entry_underlying:.2f})"
+                        )
+
+        # V12.35: Thesis-first invalidation for BEAR_PUT_DEBIT based on underlying QQQ.
+        # Symmetric to BULL_CALL invalidation but tighter (3.5% vs 3.9%): IV crush on
+        # a rally accelerates put premium decay faster than call decay on a drop.
+        if (
+            exit_reason is None
+            and is_bearish_debit_spread
+            and bool(getattr(config, "VASS_BEAR_DEBIT_QQQ_INVALIDATION_ENABLED", False))
+        ):
+            entry_underlying = float(getattr(spread, "entry_underlying_price", 0.0) or 0.0)
+            current_underlying = float(underlying_price or 0.0)
+            if entry_underlying > 0 and current_underlying > 0:
+                intraday_pct = float(
+                    getattr(config, "VASS_BEAR_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT", 0.035)
+                )
+                close_pct = float(
+                    getattr(config, "VASS_BEAR_DEBIT_QQQ_INVALIDATION_CLOSE_PCT", 0.040)
+                )
+                # Bear thesis breaks when QQQ RALLIES above entry (opposite of bull)
+                intraday_ceiling = entry_underlying * (1.0 + max(0.0, intraday_pct))
+                close_ceiling = entry_underlying * (1.0 + max(0.0, close_pct))
+                if current_underlying >= intraday_ceiling:
+                    exit_reason = (
+                        f"QQQ_BEAR_INVALIDATION_INTRADAY: QQQ {current_underlying:.2f} >= "
+                        f"{intraday_ceiling:.2f} ({intraday_pct:.1%} above entry {entry_underlying:.2f})"
+                    )
+                elif self.algorithm is not None:
+                    close_time = str(
+                        getattr(config, "VASS_BEAR_DEBIT_QQQ_INVALIDATION_CLOSE_TIME", "15:45")
+                    )
+                    close_hour = 15
+                    close_minute = 45
+                    try:
+                        close_hour, close_minute = [int(x) for x in close_time.split(":", 1)]
+                    except Exception:
+                        pass
+                    now = self.algorithm.Time
+                    in_close_window = (now.hour > close_hour) or (
+                        now.hour == close_hour and now.minute >= close_minute
+                    )
+                    if in_close_window and current_underlying >= close_ceiling:
+                        exit_reason = (
+                            f"QQQ_BEAR_INVALIDATION_CLOSE: QQQ {current_underlying:.2f} >= "
+                            f"{close_ceiling:.2f} ({close_pct:.1%} above entry {entry_underlying:.2f})"
                         )
 
         if (
@@ -1372,6 +1643,15 @@ def check_spread_exit_signals_impl(
             t1 = float(getattr(config, "VASS_MFE_T1_TRIGGER", 0.25))
             t2 = float(getattr(config, "VASS_MFE_T2_TRIGGER", 0.45))
             floor_t2_pct = float(vass_exit_profile.get("mfe_t2_floor_pct", 0.15))
+            # V12.35: BEAR_PUT D/W-aware MFE floor override — rich put premiums
+            # need higher floor to protect equivalent % of entry debit.
+            if is_bearish_debit_spread:
+                bear_put_floor_key = {
+                    "LOW": "VASS_MFE_T2_FLOOR_BEAR_PUT_LOW_VIX",
+                    "MED": "VASS_MFE_T2_FLOOR_BEAR_PUT_MED_VIX",
+                    "HIGH": "VASS_MFE_T2_FLOOR_BEAR_PUT_HIGH_VIX",
+                }.get(vass_tier, "VASS_MFE_T2_FLOOR_BEAR_PUT_MED_VIX")
+                floor_t2_pct = float(getattr(config, bear_put_floor_key, floor_t2_pct))
             commission_cost = spread.num_spreads * config.SPREAD_COMMISSION_PER_CONTRACT
             commission_per_share = (
                 commission_cost / (spread.num_spreads * 100) if spread.num_spreads > 0 else 0.0
@@ -1388,7 +1668,11 @@ def check_spread_exit_signals_impl(
             elif spread.mfe_lock_tier >= 1 and not mfe_t1_in_confirmed_disabled:
                 floor_pnl = commission_per_share
 
-            if floor_pnl is not None and mfe_eval_pnl <= floor_pnl:
+            if (
+                floor_pnl is not None
+                and mfe_eval_pnl <= floor_pnl
+                and (not is_bearish_debit_spread or mfe_eval_pnl > 0)
+            ):
                 if self.algorithm is not None and hasattr(
                     self.algorithm, "_diag_vass_mfe_lock_exits"
                 ):
@@ -1440,6 +1724,7 @@ def check_spread_exit_signals_impl(
         if (
             exit_reason is None
             and day4_eod_exit_enabled
+            and not is_bullish_debit_spread
             and not regime_confirmed
             and bool(getattr(config, "VASS_DAY4_EOD_DECISION_ENABLED", False))
             and self.algorithm is not None
@@ -1471,6 +1756,39 @@ def check_spread_exit_signals_impl(
                                 trades_only=True,
                             )
                         return None
+            except Exception:
+                pass
+
+        # V12.38: Exit stale bullish debit spreads that never made meaningful progress.
+        if (
+            exit_reason is None
+            and is_bullish_debit_spread
+            and not regime_confirmed
+            and bool(getattr(config, "VASS_BULL_DEBIT_STALE_EXIT_ENABLED", False))
+            and self.algorithm is not None
+        ):
+            try:
+                entry_dt = datetime.strptime(spread.entry_time[:19], "%Y-%m-%d %H:%M:%S")
+                held_days = (self.algorithm.Time.date() - entry_dt.date()).days
+                max_hold_days = int(getattr(config, "VASS_BULL_DEBIT_STALE_MAX_HOLD_DAYS", 15))
+                max_current_pnl_pct = float(
+                    getattr(config, "VASS_BULL_DEBIT_STALE_MAX_CURRENT_PNL_PCT", 0.10)
+                )
+                min_progress_pnl_pct = float(
+                    getattr(config, "VASS_BULL_DEBIT_STALE_MIN_PROGRESS_PNL_PCT", 0.20)
+                )
+                peak_progress_pnl_pct = float(
+                    getattr(spread, "highest_pnl_max_profit_pct", 0.0) or 0.0
+                )
+                if (
+                    held_days >= max_hold_days
+                    and pnl_pct < max_current_pnl_pct
+                    and peak_progress_pnl_pct < min_progress_pnl_pct
+                ):
+                    exit_reason = (
+                        f"STALE_NO_PROGRESS_EXIT {pnl_pct:.1%} "
+                        f"(Held={held_days}d, Peak={peak_progress_pnl_pct:.1%})"
+                    )
             except Exception:
                 pass
 
@@ -1607,6 +1925,14 @@ def check_spread_exit_signals_impl(
             and not disable_tactical_exits_for_thesis
         ):
             max_hold_days = int(getattr(config, "VASS_DEBIT_MAX_HOLD_DAYS", 0))
+            # V12.35: BEAR_PUT max hold cap — bear moves are fast, mean-reverting;
+            # extended holds bleed theta on rich put premiums.
+            if is_bearish_debit_spread:
+                bear_put_max = int(getattr(config, "VASS_BEAR_PUT_MAX_HOLD_DAYS", 0))
+                if bear_put_max > 0:
+                    max_hold_days = (
+                        min(max_hold_days, bear_put_max) if max_hold_days > 0 else bear_put_max
+                    )
             low_vix_days = int(getattr(config, "VASS_DEBIT_MAX_HOLD_DAYS_LOW_VIX", max_hold_days))
             low_vix_threshold = float(getattr(config, "VASS_DEBIT_LOW_VIX_THRESHOLD", 16.0))
             if (
@@ -1622,9 +1948,41 @@ def check_spread_exit_signals_impl(
                     entry_dt = datetime.strptime(spread.entry_time[:19], "%Y-%m-%d %H:%M:%S")
                     held_days = (self.algorithm.Time.date() - entry_dt.date()).days
                     if held_days >= max_hold_days:
-                        exit_reason = (
-                            f"SPREAD_TIME_STOP ({held_days}d >= {max_hold_days}d max hold)"
-                        )
+                        skip_time_stop = False
+                        if is_bearish_debit_spread:
+                            require_non_positive_pnl = bool(
+                                getattr(
+                                    config,
+                                    "VASS_BEAR_PUT_TIME_STOP_REQUIRE_NON_POSITIVE_PNL",
+                                    True,
+                                )
+                            )
+                            min_mfe_max_profit_pct = float(
+                                getattr(
+                                    config,
+                                    "VASS_BEAR_PUT_TIME_STOP_MIN_MFE_MAX_PROFIT_PCT",
+                                    0.25,
+                                )
+                            )
+                            if require_non_positive_pnl:
+                                current_tradeable_pnl = raw_tradeable_spread_value - entry_debit
+                                had_meaningful_mfe = (
+                                    float(
+                                        getattr(
+                                            spread,
+                                            "highest_pnl_max_profit_pct",
+                                            0.0,
+                                        )
+                                        or 0.0
+                                    )
+                                    >= min_mfe_max_profit_pct
+                                )
+                                if current_tradeable_pnl > 0 and had_meaningful_mfe:
+                                    skip_time_stop = True
+                        if not skip_time_stop:
+                            exit_reason = (
+                                f"SPREAD_TIME_STOP ({held_days}d >= {max_hold_days}d max hold)"
+                            )
                 except Exception:
                     pass
 

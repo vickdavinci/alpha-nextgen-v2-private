@@ -15,6 +15,7 @@ Spec: docs/v2-specs/V2_1_COMPLETE_ARCHITECTURE.txt (Part 2, Engine 3)
 
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import AlgorithmImports as ai
 import pytest
@@ -386,6 +387,83 @@ class TestOptionContract:
         assert restored.symbol == sample_contract.symbol
         assert restored.direction == sample_contract.direction
         assert restored.strike == sample_contract.strike
+
+    def test_from_dict_raises_clear_error_on_missing_required_field(self, sample_contract):
+        """Missing persisted contract fields should raise a clear corruption error."""
+        data = sample_contract.to_dict()
+        data.pop("symbol")
+
+        with pytest.raises(ValueError, match="Corrupted OptionContract persistence"):
+            OptionContract.from_dict(data)
+
+
+class TestSpreadFillTracker:
+    """Tests for SpreadFillTracker serialization."""
+
+    def test_to_dict_includes_telemetry_identity_fields(self):
+        """Tracker debug serialization should preserve telemetry identity."""
+        tracker = options_engine_module.SpreadFillTracker(
+            long_leg_symbol="QQQ 271231P00293000",
+            short_leg_symbol="QQQ 271231P00291000",
+            expected_quantity=3,
+            created_at="2027-01-15 10:30:00",
+            spread_type="BEAR_PUT",
+            signal_id="sig-123",
+            trace_id="trace-123",
+            direction="BEARISH",
+            strategy="BEAR_PUT_DEBIT",
+            signal_reason="BEAR_PUT_DEBIT: synthetic test",
+        )
+
+        data = tracker.to_dict()
+
+        assert data["spread_type"] == "BEAR_PUT"
+        assert data["signal_id"] == "sig-123"
+        assert data["trace_id"] == "trace-123"
+        assert data["direction"] == "BEARISH"
+        assert data["strategy"] == "BEAR_PUT_DEBIT"
+        assert data["signal_reason"] == "BEAR_PUT_DEBIT: synthetic test"
+
+    def test_spread_position_round_trips_signal_identity(self):
+        """SpreadPosition persistence should preserve lifecycle identity fields."""
+        contract = OptionContract(
+            symbol="QQQ 271231P00293000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=293.0,
+            expiry="2027-12-31",
+            delta=-0.60,
+            bid=10.20,
+            ask=10.50,
+            mid_price=10.35,
+            open_interest=5000,
+            days_to_expiry=34,
+        )
+        spread = SpreadPosition(
+            long_leg=contract,
+            short_leg=contract,
+            spread_type="BEAR_PUT",
+            net_debit=0.87,
+            max_profit=1.13,
+            width=2.0,
+            entry_time="2027-12-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=1,
+            regime_at_entry=40.0,
+            signal_id="sig-123",
+            trace_id="trace-123",
+            signal_direction="BEARISH",
+            signal_strategy="BEAR_PUT_DEBIT",
+            signal_reason="synthetic close test",
+        )
+
+        restored = SpreadPosition.from_dict(spread.to_dict())
+
+        assert restored.signal_id == "sig-123"
+        assert restored.trace_id == "trace-123"
+        assert restored.signal_direction == "BEARISH"
+        assert restored.signal_strategy == "BEAR_PUT_DEBIT"
+        assert restored.signal_reason == "synthetic close test"
 
 
 # =============================================================================
@@ -2517,6 +2595,45 @@ class TestV211StatePersistence:
         assert new_engine._intraday_position is None
         assert new_engine._vix_at_open == 20.0
 
+    def test_spread_fill_tracker_persists_round_trip(self):
+        """Spread fill tracker should survive persistence restore for restart safety."""
+        engine = OptionsEngine()
+        engine._spread_fill_tracker = options_engine_module.SpreadFillTracker(
+            long_leg_symbol="QQQ 271231P00293000",
+            short_leg_symbol="QQQ 271231P00291000",
+            expected_quantity=3,
+            timeout_minutes=7,
+            long_fill_price=10.25,
+            long_fill_qty=1,
+            long_fill_time="2027-01-15 10:30:01",
+            created_at="2027-01-15 10:30:00",
+            spread_type="BEAR_PUT",
+            signal_id="sig-restart-1",
+            trace_id="trace-restart-1",
+            direction="BEARISH",
+            strategy="BEAR_PUT_DEBIT",
+            signal_reason="restart hardening test",
+        )
+
+        state = engine.get_state_for_persistence()
+
+        new_engine = OptionsEngine()
+        new_engine.restore_state(state)
+
+        tracker = new_engine._spread_fill_tracker
+        assert tracker is not None
+        assert tracker.long_leg_symbol == "QQQ 271231P00293000"
+        assert tracker.short_leg_symbol == "QQQ 271231P00291000"
+        assert tracker.expected_quantity == 3
+        assert tracker.timeout_minutes == 7
+        assert tracker.long_fill_price == 10.25
+        assert tracker.long_fill_qty == 1
+        assert tracker.signal_id == "sig-restart-1"
+        assert tracker.trace_id == "trace-restart-1"
+        assert tracker.direction == "BEARISH"
+        assert tracker.strategy == "BEAR_PUT_DEBIT"
+        assert tracker.signal_reason == "restart hardening test"
+
     def test_backwards_compatible_state_restore(self):
         """Test restoring old state (pre-V2.1.1) doesn't break engine."""
         # Simulate old state without V2.1.1 fields
@@ -2621,27 +2738,27 @@ class TestSwingFilters:
         assert "time_window" in reason.lower()
 
     def test_swing_filter_blocks_outside_time_window_late(self, engine):
-        """Test swing filter blocks after 2:30 PM."""
+        """Test swing filter blocks after 3:30 PM."""
         can_enter, reason = engine.check_swing_filters(
             direction=OptionDirection.CALL,
             spy_gap_pct=0.0,
             spy_intraday_change_pct=0.0,
             vix_intraday_change_pct=0.0,
-            current_hour=14,
-            current_minute=45,  # After 14:30
+            current_hour=15,
+            current_minute=45,  # After 15:30
         )
 
         assert can_enter is False
         assert "time_window" in reason.lower()
 
     def test_swing_filter_allows_within_time_window(self, engine):
-        """Test swing filter allows within 10:00-14:30."""
+        """Test swing filter allows within 10:00-15:30."""
         can_enter, reason = engine.check_swing_filters(
             direction=OptionDirection.CALL,
             spy_gap_pct=0.0,
             spy_intraday_change_pct=0.0,
             vix_intraday_change_pct=0.0,
-            current_hour=11,
+            current_hour=15,
             current_minute=30,
         )
 
@@ -2675,6 +2792,66 @@ class TestSwingFilters:
 
         assert can_enter is False
         assert "vix spike" in reason.lower()
+
+    def test_swing_filter_blocks_put_gap_down_without_deterioration_confirmation(self, engine):
+        """Gap-down put entries should still block without confirmed deterioration context."""
+        can_enter, reason = engine.check_swing_filters(
+            direction=OptionDirection.PUT,
+            spy_gap_pct=-1.5,
+            spy_intraday_change_pct=0.0,
+            vix_intraday_change_pct=0.0,
+            current_hour=11,
+            current_minute=30,
+            transition_ctx={"transition_overlay": "STABLE", "delta": -1.5},
+        )
+
+        assert can_enter is False
+        assert "bounce risk for puts" in reason.lower()
+
+    def test_swing_filter_allows_put_gap_down_in_confirmed_deterioration(self, engine):
+        """Gap-down put entries should bypass bounce-risk block in confirmed deterioration."""
+        can_enter, reason = engine.check_swing_filters(
+            direction=OptionDirection.PUT,
+            spy_gap_pct=-1.5,
+            spy_intraday_change_pct=0.0,
+            vix_intraday_change_pct=0.0,
+            current_hour=11,
+            current_minute=30,
+            transition_ctx={"transition_overlay": "DETERIORATION", "delta": -1.2},
+        )
+
+        assert can_enter is True
+        assert reason == ""
+
+    def test_swing_filter_requires_meaningful_deterioration_for_put_gap_down_bypass(self, engine):
+        """Gap-down put bypass should still reject weak deterioration signals."""
+        can_enter, reason = engine.check_swing_filters(
+            direction=OptionDirection.PUT,
+            spy_gap_pct=-1.5,
+            spy_intraday_change_pct=0.0,
+            vix_intraday_change_pct=0.0,
+            current_hour=11,
+            current_minute=30,
+            transition_ctx={"transition_overlay": "DETERIORATION", "delta": -0.4},
+        )
+
+        assert can_enter is False
+        assert "bounce risk for puts" in reason.lower()
+
+    def test_swing_filter_keeps_call_gap_up_block_in_deterioration(self, engine):
+        """Call reversal-risk block should remain active even if deterioration context is present."""
+        can_enter, reason = engine.check_swing_filters(
+            direction=OptionDirection.CALL,
+            spy_gap_pct=1.5,
+            spy_intraday_change_pct=0.0,
+            vix_intraday_change_pct=0.0,
+            current_hour=11,
+            current_minute=30,
+            transition_ctx={"transition_overlay": "DETERIORATION", "delta": -1.2},
+        )
+
+        assert can_enter is False
+        assert "reversal risk for calls" in reason.lower()
 
 
 class TestDailyResetV211:
@@ -3196,7 +3373,8 @@ class TestIntradayLaneIsolation:
         assert itm_reason == "E_ITM_A"
         assert itm_detail == "itm detail"
 
-    def test_pending_symbol_conflict_does_not_set_pending_entry_state(self, engine):
+    def test_pending_symbol_conflict_does_not_set_pending_entry_state(self, engine, monkeypatch):
+        monkeypatch.setattr(config, "MICRO_ENTRY_ENGINE_ENABLED", True)
         contract = OptionContract(
             symbol="QQQ 270105P00470000",
             underlying="QQQ",
@@ -3256,7 +3434,8 @@ class TestIntradayLaneIsolation:
         assert engine._pending_num_contracts is None
         assert engine._pending_entry_strategy is None
 
-    def test_active_symbol_conflict_blocks_cross_lane_entry(self, engine):
+    def test_active_symbol_conflict_blocks_cross_lane_entry(self, engine, monkeypatch):
+        monkeypatch.setattr(config, "MICRO_ENTRY_ENGINE_ENABLED", True)
         contract = OptionContract(
             symbol="QQQ 270105P00470000",
             underlying="QQQ",
@@ -3948,6 +4127,415 @@ class TestRejectionAwareSizing:
 
         assert engine._rejection_margin_cap is None
 
+    def test_bull_call_spread_starts_in_legacy_even_when_thesis_first_is_enabled(
+        self, engine, monkeypatch
+    ):
+        """Bull call debits should enter tactical-first even under THESIS_FIRST mode."""
+        monkeypatch.setattr(config, "VASS_EXIT_POLICY_MODE", "THESIS_FIRST")
+
+        long_leg = OptionContract(
+            symbol="QQQ 271231C00300000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=0.60,
+            bid=5.00,
+            ask=5.50,
+            mid_price=5.25,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        short_leg = OptionContract(
+            symbol="QQQ 271231C00305000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=305.0,
+            expiry="2027-12-31",
+            delta=0.40,
+            bid=3.00,
+            ask=3.50,
+            mid_price=3.25,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        engine._pending_spread_long_leg = long_leg
+        engine._pending_spread_short_leg = short_leg
+        engine._pending_spread_type = "BULL_CALL"
+        engine._pending_net_debit = 2.00
+        engine._pending_max_profit = 3.00
+        engine._pending_spread_width = 5.0
+        engine._pending_num_contracts = 10
+        engine._pending_entry_score = 3.5
+
+        engine.register_spread_entry(
+            long_leg_fill_price=5.25,
+            short_leg_fill_price=3.25,
+            entry_time="10:30:00",
+            current_date="2027-01-15",
+            regime_score=70.0,
+        )
+
+        assert engine._spread_position.entry_policy_mode == "LEGACY"
+
+    def test_bear_put_debit_keeps_thesis_first_policy_mode(self, engine, monkeypatch):
+        """Non-bullish-debit spreads should preserve the global thesis-first mode."""
+        monkeypatch.setattr(config, "VASS_EXIT_POLICY_MODE", "THESIS_FIRST")
+
+        long_leg = OptionContract(
+            symbol="QQQ 271231P00305000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=305.0,
+            expiry="2027-12-31",
+            delta=-0.45,
+            bid=5.20,
+            ask=5.40,
+            mid_price=5.30,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        short_leg = OptionContract(
+            symbol="QQQ 271231P00300000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=-0.30,
+            bid=3.00,
+            ask=3.20,
+            mid_price=3.10,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        engine._pending_spread_long_leg = long_leg
+        engine._pending_spread_short_leg = short_leg
+        engine._pending_spread_type = "BEAR_PUT_DEBIT"
+        engine._pending_net_debit = 2.20
+        engine._pending_max_profit = 2.80
+        engine._pending_spread_width = 5.0
+        engine._pending_num_contracts = 8
+        engine._pending_entry_score = 3.8
+
+        engine.register_spread_entry(
+            long_leg_fill_price=5.30,
+            short_leg_fill_price=3.10,
+            entry_time="10:45:00",
+            current_date="2027-01-15",
+            regime_score=40.0,
+        )
+
+        assert engine._spread_position.entry_policy_mode == "THESIS_FIRST"
+
+    def test_spread_fill_backfills_missing_approved_lifecycle(self, engine):
+        """Spread fill should backfill APPROVED telemetry when the original approval row is missing."""
+        lifecycle = []
+        approved_ids = set()
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 1, 15, 10, 30, 0),
+            qqq=None,
+            Securities={},
+            Log=lambda *_args, **_kwargs: None,
+            _diag_intraday_approved_ids_logged=approved_ids,
+            _record_signal_lifecycle_event=lambda **kwargs: lifecycle.append(kwargs),
+        )
+
+        def _mark_engine_signal_event(event_type, signal_id):
+            event_key = str(event_type or "").upper()
+            sid = str(signal_id or "").strip()
+            if event_key != "APPROVED" or not sid:
+                return True
+            if sid in approved_ids:
+                return False
+            approved_ids.add(sid)
+            return True
+
+        engine.algorithm._mark_engine_signal_event = _mark_engine_signal_event
+
+        long_leg = OptionContract(
+            symbol="QQQ 271231P00300000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=-0.40,
+            bid=4.80,
+            ask=5.00,
+            mid_price=4.90,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        short_leg = OptionContract(
+            symbol="QQQ 271231P00295000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=295.0,
+            expiry="2027-12-31",
+            delta=-0.22,
+            bid=2.90,
+            ask=3.10,
+            mid_price=3.00,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        engine._pending_spread_long_leg = long_leg
+        engine._pending_spread_short_leg = short_leg
+        engine._pending_spread_type = "BEAR_PUT_DEBIT"
+        engine._pending_net_debit = 1.90
+        engine._pending_max_profit = 3.10
+        engine._pending_spread_width = 5.0
+        engine._pending_num_contracts = 3
+        engine._pending_entry_score = 4.0
+        engine._pending_spread_signal_id = "VASS-20270115-1030-1"
+        engine._pending_spread_trace_id = "VASS_20270115_103000_QQQ"
+        engine._pending_spread_direction = "PUT"
+        engine._pending_spread_strategy = "BEAR_PUT_DEBIT"
+        engine._pending_spread_signal_reason = "BEAR_PUT_DEBIT: synthetic test"
+
+        engine.register_spread_entry(
+            long_leg_fill_price=4.95,
+            short_leg_fill_price=3.05,
+            entry_time="2027-01-15 10:30:00",
+            current_date="2027-01-15",
+            regime_score=42.0,
+        )
+
+        assert len(lifecycle) == 1
+        event = lifecycle[0]
+        assert event["event"] == "APPROVED"
+        assert event["signal_id"] == "VASS-20270115-1030-1"
+        assert event["gate_name"] == "SPREAD_ENTRY_FILL_BACKFILL"
+        assert event["trace_id"] == "VASS_20270115_103000_QQQ"
+
+    def test_spread_fill_does_not_duplicate_existing_approved_lifecycle(self, engine):
+        """Spread fill should not duplicate APPROVED telemetry when the signal id was already logged."""
+        lifecycle = []
+        approved_ids = {"VASS-20270115-1030-2"}
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 1, 15, 10, 30, 0),
+            qqq=None,
+            Securities={},
+            Log=lambda *_args, **_kwargs: None,
+            _diag_intraday_approved_ids_logged=approved_ids,
+            _record_signal_lifecycle_event=lambda **kwargs: lifecycle.append(kwargs),
+        )
+
+        def _mark_engine_signal_event(event_type, signal_id):
+            event_key = str(event_type or "").upper()
+            sid = str(signal_id or "").strip()
+            if event_key != "APPROVED" or not sid:
+                return True
+            if sid in approved_ids:
+                return False
+            approved_ids.add(sid)
+            return True
+
+        engine.algorithm._mark_engine_signal_event = _mark_engine_signal_event
+
+        long_leg = OptionContract(
+            symbol="QQQ 271231P00300000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=-0.40,
+            bid=4.80,
+            ask=5.00,
+            mid_price=4.90,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        short_leg = OptionContract(
+            symbol="QQQ 271231P00295000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=295.0,
+            expiry="2027-12-31",
+            delta=-0.22,
+            bid=2.90,
+            ask=3.10,
+            mid_price=3.00,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        engine._pending_spread_long_leg = long_leg
+        engine._pending_spread_short_leg = short_leg
+        engine._pending_spread_type = "BEAR_PUT_DEBIT"
+        engine._pending_net_debit = 1.90
+        engine._pending_max_profit = 3.10
+        engine._pending_spread_width = 5.0
+        engine._pending_num_contracts = 3
+        engine._pending_entry_score = 4.0
+        engine._pending_spread_signal_id = "VASS-20270115-1030-2"
+        engine._pending_spread_trace_id = "VASS_20270115_103000_QQQ"
+        engine._pending_spread_direction = "PUT"
+        engine._pending_spread_strategy = "BEAR_PUT_DEBIT"
+        engine._pending_spread_signal_reason = "BEAR_PUT_DEBIT: synthetic test"
+
+        engine.register_spread_entry(
+            long_leg_fill_price=4.95,
+            short_leg_fill_price=3.05,
+            entry_time="2027-01-15 10:30:00",
+            current_date="2027-01-15",
+            regime_score=42.0,
+        )
+
+        assert lifecycle == []
+
+    def test_spread_fill_backfills_approved_lifecycle_from_tracker_identity(self, engine):
+        """Spread fill should backfill APPROVED telemetry from tracker identity when pending state was cleared."""
+        lifecycle = []
+        approved_ids = set()
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 1, 15, 10, 30, 0),
+            qqq=None,
+            Securities={},
+            Log=lambda *_args, **_kwargs: None,
+            _diag_intraday_approved_ids_logged=approved_ids,
+            _record_signal_lifecycle_event=lambda **kwargs: lifecycle.append(kwargs),
+        )
+
+        def _mark_engine_signal_event(event_type, signal_id):
+            event_key = str(event_type or "").upper()
+            sid = str(signal_id or "").strip()
+            if event_key != "APPROVED" or not sid:
+                return True
+            if sid in approved_ids:
+                return False
+            approved_ids.add(sid)
+            return True
+
+        engine.algorithm._mark_engine_signal_event = _mark_engine_signal_event
+
+        long_leg = OptionContract(
+            symbol="QQQ 271231P00300000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=-0.40,
+            bid=4.80,
+            ask=5.00,
+            mid_price=4.90,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        short_leg = OptionContract(
+            symbol="QQQ 271231P00295000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=295.0,
+            expiry="2027-12-31",
+            delta=-0.22,
+            bid=2.90,
+            ask=3.10,
+            mid_price=3.00,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        engine._pending_spread_long_leg = long_leg
+        engine._pending_spread_short_leg = short_leg
+        engine._pending_spread_type = "BEAR_PUT_DEBIT"
+        engine._pending_net_debit = 1.90
+        engine._pending_max_profit = 3.10
+        engine._pending_spread_width = 5.0
+        engine._pending_num_contracts = 3
+        engine._pending_entry_score = 4.0
+        engine.algorithm._spread_fill_tracker = options_engine_module.SpreadFillTracker(
+            long_leg_symbol=long_leg.symbol,
+            short_leg_symbol=short_leg.symbol,
+            expected_quantity=3,
+            spread_type="BEAR_PUT_DEBIT",
+            signal_id="VASS-20270115-1030-3",
+            trace_id="VASS_20270115_103000_QQQ",
+            direction="PUT",
+            strategy="BEAR_PUT_DEBIT",
+            signal_reason="BEAR_PUT_DEBIT: tracker fallback",
+        )
+        engine._pending_spread_signal_id = ""
+        engine._pending_spread_trace_id = ""
+        engine._pending_spread_direction = ""
+        engine._pending_spread_strategy = ""
+        engine._pending_spread_signal_reason = ""
+
+        engine.register_spread_entry(
+            long_leg_fill_price=4.95,
+            short_leg_fill_price=3.05,
+            entry_time="2027-01-15 10:30:00",
+            current_date="2027-01-15",
+            regime_score=42.0,
+        )
+
+        assert len(lifecycle) == 1
+        event = lifecycle[0]
+        assert event["event"] == "APPROVED"
+        assert event["signal_id"] == "VASS-20270115-1030-3"
+        assert event["trace_id"] == "VASS_20270115_103000_QQQ"
+        assert event["gate_name"] == "SPREAD_ENTRY_FILL_BACKFILL"
+
+    def test_spread_fill_tracker_seed_preserves_signal_identity(self, engine):
+        """Tracker creation should preserve signal identity from the seed payload."""
+        long_leg = OptionContract(
+            symbol="QQQ 271231P00300000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=-0.40,
+            bid=4.80,
+            ask=5.00,
+            mid_price=4.90,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        short_leg = OptionContract(
+            symbol="QQQ 271231P00295000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=295.0,
+            expiry="2027-12-31",
+            delta=-0.22,
+            bid=2.90,
+            ask=3.10,
+            mid_price=3.00,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        engine._pending_spread_long_leg = long_leg
+        engine._pending_spread_short_leg = short_leg
+        engine._pending_spread_type = "BEAR_PUT_DEBIT"
+        engine._pending_num_contracts = 3
+        engine._pending_spread_signal_id = "VASS-20270115-1030-9"
+        engine._pending_spread_trace_id = "VASS_20270115_103000_QQQ"
+        engine._pending_spread_direction = "PUT"
+        engine._pending_spread_strategy = "BEAR_PUT_DEBIT"
+        engine._pending_spread_signal_reason = "BEAR_PUT_DEBIT: seed identity"
+
+        seed = engine.get_pending_spread_tracker_seed()
+        engine._pending_spread_signal_id = ""
+        engine._pending_spread_trace_id = ""
+        engine._pending_spread_direction = ""
+        engine._pending_spread_strategy = ""
+        engine._pending_spread_signal_reason = ""
+
+        tracker = options_engine_module.SpreadFillTracker(
+            long_leg_symbol=seed["long_leg_symbol"],
+            short_leg_symbol=seed["short_leg_symbol"],
+            expected_quantity=int(seed["expected_quantity"]),
+            spread_type=seed.get("spread_type"),
+            signal_id=str(seed.get("signal_id", "") or ""),
+            trace_id=str(seed.get("trace_id", "") or ""),
+            direction=str(seed.get("direction", "") or ""),
+            strategy=str(seed.get("strategy", "") or ""),
+            signal_reason=str(seed.get("signal_reason", "") or ""),
+        )
+
+        assert tracker.signal_id == "VASS-20270115-1030-9"
+        assert tracker.trace_id == "VASS_20270115_103000_QQQ"
+        assert tracker.direction == "PUT"
+        assert tracker.strategy == "BEAR_PUT_DEBIT"
+        assert tracker.signal_reason == "BEAR_PUT_DEBIT: seed identity"
+
     def test_rejection_cap_cleared_on_daily_reset(self, engine):
         """Rejection cap should be cleared on new trading day."""
         engine._rejection_margin_cap = 5000.0
@@ -4284,6 +4872,296 @@ class TestNeutralityExit:
         assert result is not None
         assert "QQQ_INVALIDATION_CLOSE" in str(result[0].reason)
 
+    def test_bull_debit_qqq_invalidation_undeveloped_trade_keeps_existing_threshold(
+        self, engine, long_leg, short_leg, monkeypatch
+    ):
+        """Undeveloped bull debits should no longer use a tighter intraday invalidation."""
+        self._make_spread(engine, "BULL_CALL", 2.50, long_leg, short_leg)
+        engine._spread_position.entry_underlying_price = 100.0
+        engine._spread_position.highest_pnl_max_profit_pct = 0.10
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_MFE_DEVELOPED_MIN_PCT", 0.20)
+        monkeypatch.setattr(
+            config,
+            "VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_UNDEVELOPED_PCT",
+            0.039,
+        )
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT", 0.040)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=5.40,
+            short_leg_price=3.00,
+            regime_score=70.0,
+            vix_current=14.0,
+            current_dte=20,
+            underlying_price=97.4,
+        )
+
+        assert result is None
+
+    def test_bull_debit_day4_promotion_enables_thesis_mode(
+        self, engine, long_leg, short_leg, monkeypatch
+    ):
+        """Bull call debits should promote into thesis mode after day 4 once they earn it."""
+        from types import SimpleNamespace
+
+        self._make_spread(engine, "BULL_CALL", 2.50, long_leg, short_leg)
+        engine._spread_position.entry_time = "2027-01-01 10:00:00"
+        engine._spread_position.entry_underlying_price = 100.0
+        engine._spread_position.entry_policy_mode = "LEGACY"
+        engine._spread_position.active_policy_mode = "LEGACY"
+        engine._spread_position.highest_pnl_max_profit_pct = 0.22
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 1, 5, 15, 45, 0),
+            Portfolio=SimpleNamespace(TotalPortfolioValue=100000.0),
+            qqq_sma20=SimpleNamespace(IsReady=True, Current=SimpleNamespace(Value=99.5)),
+            Log=lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(config, "VASS_EXIT_POLICY_MODE", "THESIS_FIRST")
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_HOLD_DAYS", 4)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_TIME", "15:45")
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_PROGRESS_PCT", 0.20)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MAX_DRAWDOWN_PCT", 0.015)
+        monkeypatch.setattr(
+            config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_CURRENT_PNL_PCT", -0.10
+        )
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=6.05,
+            short_leg_price=3.90,
+            regime_score=64.0,
+            vix_current=14.0,
+            current_dte=20,
+            underlying_price=99.2,
+        )
+
+        assert result is None
+        assert engine._spread_position.entry_policy_mode == "LEGACY"
+        assert engine._spread_position.active_policy_mode == "THESIS_FIRST"
+        assert engine._spread_position.thesis_promoted_at == "2027-01-05 15:45:00"
+
+    def test_bull_debit_day4_cleanup_is_disabled_before_promotion(
+        self, engine, long_leg, short_leg, monkeypatch
+    ):
+        """Bull call debits should not use the special day-4 EOD cleanup anymore."""
+        from types import SimpleNamespace
+
+        self._make_spread(engine, "BULL_CALL", 2.50, long_leg, short_leg)
+        engine._spread_position.entry_time = "2027-01-01 10:00:00"
+        engine._spread_position.entry_underlying_price = 100.0
+        engine._spread_position.entry_policy_mode = "LEGACY"
+        engine._spread_position.highest_pnl_max_profit_pct = 0.05
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 1, 5, 15, 45, 0),
+            Portfolio=SimpleNamespace(TotalPortfolioValue=100000.0),
+            qqq_sma20=SimpleNamespace(IsReady=True, Current=SimpleNamespace(Value=100.5)),
+            Log=lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(config, "VASS_EXIT_POLICY_MODE", "THESIS_FIRST")
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_ENABLE_PROFIT_TARGET_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MFE_LOCK_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MARK_STOP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_DAY4_EOD_DECISION_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_DAY4_EOD_KEEP_IF_PNL_GT", 0.0)
+        monkeypatch.setattr(config, "SPREAD_HARD_STOP_LOSS_PCT", 0.50)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=5.40,
+            short_leg_price=3.00,
+            regime_score=54.0,
+            vix_current=14.0,
+            current_dte=20,
+            underlying_price=98.8,
+        )
+
+        assert result is None
+        assert engine._spread_position.entry_policy_mode == "LEGACY"
+        assert engine._spread_position.active_policy_mode == "LEGACY"
+
+    def test_bull_debit_promotion_preserves_entry_policy_in_persistence(
+        self, engine, long_leg, short_leg, monkeypatch
+    ):
+        """Persistence should keep entry policy provenance separate from promoted mode."""
+        from types import SimpleNamespace
+
+        self._make_spread(engine, "BULL_CALL", 2.50, long_leg, short_leg)
+        engine._spread_position.entry_time = "2027-01-01 10:00:00"
+        engine._spread_position.entry_underlying_price = 100.0
+        engine._spread_position.entry_policy_mode = "LEGACY"
+        engine._spread_position.active_policy_mode = "LEGACY"
+        engine._spread_position.highest_pnl_max_profit_pct = 0.22
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 1, 5, 15, 45, 0),
+            Portfolio=SimpleNamespace(TotalPortfolioValue=100000.0),
+            qqq_sma20=SimpleNamespace(IsReady=True, Current=SimpleNamespace(Value=99.5)),
+            Log=lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(config, "VASS_EXIT_POLICY_MODE", "THESIS_FIRST")
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_HOLD_DAYS", 4)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_TIME", "15:45")
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_PROGRESS_PCT", 0.20)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MAX_DRAWDOWN_PCT", 0.015)
+        monkeypatch.setattr(
+            config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_CURRENT_PNL_PCT", -0.10
+        )
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=6.05,
+            short_leg_price=3.90,
+            regime_score=64.0,
+            vix_current=14.0,
+            current_dte=20,
+            underlying_price=99.2,
+        )
+
+        assert result is None
+        persisted = engine._spread_position.to_dict()
+
+        assert persisted["entry_policy_mode"] == "LEGACY"
+        assert persisted["active_policy_mode"] == "THESIS_FIRST"
+        assert persisted["thesis_promoted_at"] == "2027-01-05 15:45:00"
+
+    def test_bull_debit_day4_promotion_emits_telemetry(
+        self, engine, long_leg, short_leg, monkeypatch
+    ):
+        """Bull debit promotion should emit diagnostics and signal lifecycle telemetry."""
+        from types import SimpleNamespace
+
+        lifecycle = []
+        logs = []
+
+        self._make_spread(engine, "BULL_CALL", 2.50, long_leg, short_leg)
+        engine._spread_position.entry_time = "2027-01-01 10:00:00"
+        engine._spread_position.entry_underlying_price = 100.0
+        engine._spread_position.entry_policy_mode = "LEGACY"
+        engine._spread_position.active_policy_mode = "LEGACY"
+        engine._spread_position.highest_pnl_max_profit_pct = 0.22
+        engine._spread_position.signal_id = "sig-123"
+        engine._spread_position.trace_id = "trace-123"
+        engine._spread_position.signal_direction = "BULLISH"
+        engine._spread_position.signal_strategy = "BULL_CALL_DEBIT"
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 1, 5, 15, 45, 0),
+            Portfolio=SimpleNamespace(TotalPortfolioValue=100000.0),
+            qqq_sma20=SimpleNamespace(IsReady=True, Current=SimpleNamespace(Value=99.5)),
+            Log=lambda message: logs.append(message),
+            _record_signal_lifecycle_event=lambda **kwargs: lifecycle.append(kwargs),
+            _diag_vass_bull_debit_day4_promotion_checks=0,
+            _diag_vass_bull_debit_day4_promotions=0,
+        )
+        monkeypatch.setattr(config, "VASS_EXIT_POLICY_MODE", "THESIS_FIRST")
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_HOLD_DAYS", 4)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_TIME", "15:45")
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_PROGRESS_PCT", 0.20)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MAX_DRAWDOWN_PCT", 0.015)
+        monkeypatch.setattr(
+            config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_CURRENT_PNL_PCT", -0.10
+        )
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=6.05,
+            short_leg_price=3.90,
+            regime_score=64.0,
+            vix_current=14.0,
+            current_dte=20,
+            underlying_price=99.2,
+        )
+
+        assert result is None
+        assert engine.algorithm._diag_vass_bull_debit_day4_promotion_checks == 1
+        assert engine.algorithm._diag_vass_bull_debit_day4_promotions == 1
+        assert any("BULL_DEBIT_DAY4_THESIS_PROMOTED" in message for message in logs)
+        assert lifecycle == [
+            {
+                "engine": "VASS",
+                "event": "THESIS_PROMOTED",
+                "signal_id": "sig-123",
+                "trace_id": "trace-123",
+                "direction": "BULLISH",
+                "strategy": "BULL_CALL_DEBIT",
+                "code": "R_THESIS_PROMOTED",
+                "gate_name": "BULL_DEBIT_DAY4_THESIS_PROMOTION",
+                "reason": "Regime=64 | Peak=18.0% | QQQRet=-0.8% | P&L=-14.0%",
+                "contract_symbol": str(long_leg.symbol),
+            }
+        ]
+
+    def test_bull_debit_day4_promotion_requires_same_progress_as_stale_gate(
+        self, engine, long_leg, short_leg, monkeypatch
+    ):
+        """Bull debit promotion should not occur below the stale gate's progress floor."""
+        from types import SimpleNamespace
+
+        self._make_spread(engine, "BULL_CALL", 2.50, long_leg, short_leg)
+        engine._spread_position.entry_time = "2027-01-01 10:00:00"
+        engine._spread_position.entry_underlying_price = 100.0
+        engine._spread_position.entry_policy_mode = "LEGACY"
+        engine._spread_position.active_policy_mode = "LEGACY"
+        engine._spread_position.highest_pnl_max_profit_pct = 0.18
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 1, 5, 15, 45, 0),
+            Portfolio=SimpleNamespace(TotalPortfolioValue=100000.0),
+            qqq_sma20=SimpleNamespace(IsReady=True, Current=SimpleNamespace(Value=99.5)),
+            Log=lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(config, "VASS_EXIT_POLICY_MODE", "THESIS_FIRST")
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_HOLD_DAYS", 4)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_TIME", "15:45")
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_DAY4_THESIS_PROMOTION_MIN_PROGRESS_PCT", 0.20)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=6.05,
+            short_leg_price=3.90,
+            regime_score=64.0,
+            vix_current=14.0,
+            current_dte=20,
+            underlying_price=99.2,
+        )
+
+        assert result is None
+        assert engine._spread_position.entry_policy_mode == "LEGACY"
+        assert engine._spread_position.active_policy_mode == "LEGACY"
+        assert engine._spread_position.thesis_promoted_at is None
+
+    def test_bull_debit_qqq_invalidation_developed_trade_keeps_existing_threshold(
+        self, engine, long_leg, short_leg, monkeypatch
+    ):
+        """Developed bull debits should retain the wider invalidation threshold."""
+        self._make_spread(engine, "BULL_CALL", 2.50, long_leg, short_leg)
+        engine._spread_position.entry_underlying_price = 100.0
+        engine._spread_position.highest_pnl_max_profit_pct = 0.25
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_MFE_DEVELOPED_MIN_PCT", 0.20)
+        monkeypatch.setattr(
+            config,
+            "VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_UNDEVELOPED_PCT",
+            0.025,
+        )
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT", 0.040)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=5.40,
+            short_leg_price=3.00,
+            regime_score=70.0,
+            vix_current=14.0,
+            current_dte=20,
+            underlying_price=97.4,
+        )
+
+        assert result is None
+
 
 def test_spread_position_roundtrip_preserves_entry_underlying_price(sample_contract):
     """V12.25: SpreadPosition persistence retains entry underlying anchor."""
@@ -4396,6 +5274,76 @@ class TestVASSCreditSpreadEntry:
         assert dte_min == config.VASS_HIGH_IV_DTE_MIN
         assert dte_max == config.VASS_HIGH_IV_DTE_MAX
 
+    @patch.object(config, "VASS_ENABLED", True)
+    def test_resolve_vass_strategy_low_vix_high_iv_bullish_reroutes_to_debit(self, engine):
+        """V12.33: low realized VIX should route bullish HIGH-IV scans away from put credits."""
+        engine.is_iv_sensor_ready = lambda: True
+        engine.get_iv_environment = lambda iv_rank=None: "HIGH"
+
+        strategy, dte_min, dte_max, is_credit = engine.resolve_vass_strategy(
+            direction="BULLISH",
+            overlay_state="STABLE",
+            iv_rank=75.0,
+            regime_score=60.0,
+            current_vix=17.0,
+        )
+
+        assert strategy == SpreadStrategy.BULL_CALL_DEBIT
+        assert dte_min == config.VASS_MEDIUM_IV_DTE_MIN
+        assert dte_max == config.VASS_MEDIUM_IV_DTE_MAX
+        assert is_credit is False
+
+    @patch.object(config, "VASS_ENABLED", True)
+    def test_resolve_vass_strategy_high_vix_high_iv_bullish_keeps_credit(self, engine):
+        """V12.33: bullish HIGH-IV routing should still use put credits once the real VIX floor is met."""
+        engine.is_iv_sensor_ready = lambda: True
+        engine.get_iv_environment = lambda iv_rank=None: "HIGH"
+
+        strategy, dte_min, dte_max, is_credit = engine.resolve_vass_strategy(
+            direction="BULLISH",
+            overlay_state="STABLE",
+            iv_rank=75.0,
+            regime_score=60.0,
+            current_vix=22.0,
+        )
+
+        assert strategy == SpreadStrategy.BULL_PUT_CREDIT
+        assert dte_min == config.VASS_HIGH_IV_DTE_MIN
+        assert dte_max == config.VASS_HIGH_IV_DTE_MAX
+        assert is_credit is True
+
+    def test_bear_call_credit_uses_lower_credit_to_width_floor(self, engine):
+        """V12.33: bear-call credits should use their own lower C/W floor in the same IV environment."""
+        engine._iv_sensor.classify = lambda: "HIGH"
+        bull_floor = engine._get_effective_credit_to_width_min(
+            vix_current=32.0,
+            strategy=SpreadStrategy.BULL_PUT_CREDIT,
+        )
+        bear_floor = engine._get_effective_credit_to_width_min(
+            vix_current=32.0,
+            strategy=SpreadStrategy.BEAR_CALL_CREDIT,
+        )
+
+        assert bull_floor == config.CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV
+        assert bear_floor == config.BEAR_CALL_CREDIT_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV
+        assert bear_floor < bull_floor
+
+    def test_bear_call_credit_medium_iv_floor_is_strategy_specific(self, engine):
+        """V12.33: medium-IV bear-call floor should stay below bullish put-credit floor."""
+        engine._iv_sensor.classify = lambda: "MEDIUM"
+        bull_floor = engine._get_effective_credit_to_width_min(
+            vix_current=22.0,
+            strategy=SpreadStrategy.BULL_PUT_CREDIT,
+        )
+        bear_floor = engine._get_effective_credit_to_width_min(
+            vix_current=22.0,
+            strategy=SpreadStrategy.BEAR_CALL_CREDIT,
+        )
+
+        assert bull_floor == config.CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_MEDIUM_IV
+        assert bear_floor == config.BEAR_CALL_CREDIT_MIN_CREDIT_TO_WIDTH_PCT_MEDIUM_IV
+        assert bear_floor < bull_floor
+
     def test_select_strategy_low_iv_bearish(self, engine):
         """LOW IV + BEARISH should select Bear Put Debit with monthly DTE."""
         strategy, dte_min, dte_max = engine._select_strategy("BEARISH", "LOW")
@@ -4501,6 +5449,54 @@ class TestVASSCreditSpreadEntry:
         assert credit_per > 0  # Positive credit received
         assert max_loss_per > 0  # Defined max loss
         assert total_margin <= 7500  # Never exceeds allocation
+
+    def test_bull_put_credit_ignores_bull_regime_assignment_gate(self, engine):
+        """V12.33: bull regime alone should not suppress calm BULL_PUT_CREDIT entries."""
+        close_short = OptionContract(
+            symbol="QQQ 270315P00500000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=500.0,
+            expiry="2027-03-15",
+            delta=-0.30,
+            bid=3.50,
+            ask=3.80,
+            mid_price=3.65,
+            open_interest=5000,
+            days_to_expiry=10,
+        )
+        protective_long = OptionContract(
+            symbol="QQQ 270315P00495000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=495.0,
+            expiry="2027-03-15",
+            delta=-0.20,
+            bid=1.00,
+            ask=1.20,
+            mid_price=1.10,
+            open_interest=4000,
+            days_to_expiry=10,
+        )
+
+        signal = engine.check_credit_spread_entry_signal(
+            regime_score=60.0,
+            vix_current=16.0,
+            adx_value=30.0,
+            current_price=502.0,
+            ma200_value=480.0,
+            iv_rank=35.0,
+            current_hour=11,
+            current_minute=0,
+            current_date="2027-03-05",
+            portfolio_value=100_000,
+            short_leg_contract=close_short,
+            long_leg_contract=protective_long,
+            strategy=SpreadStrategy.BULL_PUT_CREDIT,
+            direction=OptionDirection.PUT,
+        )
+
+        assert signal is not None
 
     def test_credit_put_blocked_lower_neutral_stress_overlay(
         self, engine, credit_short_leg, credit_long_leg
@@ -4608,6 +5604,497 @@ class TestResolverMicroPrimary:
         assert "VASS_NO_CONVICTION" in reason or "Misaligned" in reason
 
 
+class TestVASSNeutralDeteriorationBias:
+    """V12.33 neutral+deterioration should bias VASS bearish without widening other cases."""
+
+    def _make_algorithm(self, current_vix: float = 18.0) -> SimpleNamespace:
+        """Create a minimal algorithm stub for VASS direction resolution tests."""
+        return SimpleNamespace(
+            Time=datetime(2022, 7, 15, 10, 30, 0),
+            Log=lambda *_args, **_kwargs: None,
+            _current_vix=current_vix,
+        )
+
+    def _make_transition_ctx(
+        self,
+        *,
+        overlay: str,
+        delta: float = 0.0,
+        transition_score: float = 56.0,
+        momentum_roc: float = -0.01,
+    ) -> dict:
+        """Create a minimal transition context for resolver tests."""
+        return {
+            "transition_overlay": overlay,
+            "delta": delta,
+            "transition_score": transition_score,
+            "effective_score": transition_score,
+            "momentum_roc": momentum_roc,
+        }
+
+    def _wire_vass_host(
+        self,
+        engine: OptionsEngine,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        overlay: str,
+        conviction: tuple = (False, None, ""),
+        current_vix: float = 18.0,
+    ) -> list[dict]:
+        """Wire a minimal host surface for resolve_direction_context()."""
+        decisions: list[dict] = []
+        algorithm = self._make_algorithm(current_vix=current_vix)
+        engine.algorithm = algorithm
+
+        monkeypatch.setattr(config, "VASS_USE_CONVICTION_ONLY_DIRECTION", False)
+        monkeypatch.setattr(config, "VASS_NEUTRAL_FALLBACK_DIRECTION_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_NEUTRAL_DIRECTION_MEMORY_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_NEUTRAL_FALLBACK_DELTA_MIN", 1.0)
+        monkeypatch.setattr(config, "VASS_NEUTRAL_FALLBACK_DELTA_SOFT_MIN", 0.5)
+
+        engine._record_regime_decision = lambda **kwargs: decisions.append(kwargs)
+        engine.evaluate_transition_policy_block = lambda **kwargs: (None, "")
+        engine.update_iv_sensor = lambda *_args, **_kwargs: None
+        engine.get_iv_conviction = lambda: conviction
+        engine.get_macro_direction = lambda _regime_score: "NEUTRAL"
+        engine.get_regime_overlay_state = lambda vix_current, regime_score: overlay
+        engine.resolve_trade_signal = lambda **kwargs: (
+            kwargs.get("engine_direction") is not None,
+            kwargs.get("engine_direction"),
+            (
+                f"RESOLVED:{kwargs.get('engine_direction')}"
+                if kwargs.get("engine_direction") is not None
+                else "NO_TRADE: VASS has no direction, Macro is NEUTRAL"
+            ),
+        )
+        return decisions
+
+    def test_neutral_deterioration_biases_vass_bearish(self, engine, monkeypatch):
+        """Neutral+deterioration should force a bearish VASS direction when resolver is otherwise empty."""
+        decisions = self._wire_vass_host(
+            engine,
+            monkeypatch,
+            overlay="DETERIORATION",
+        )
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=56.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(overlay="DETERIORATION"),
+        )
+
+        assert result is not None
+        assert result[0] == OptionDirection.PUT
+        assert result[1] == "BEARISH"
+        assert result[8] == "BEARISH"
+        infer_decision = next(
+            decision for decision in decisions if decision["gate_name"] == "VASS_NEUTRAL_FALLBACK"
+        )
+        assert infer_decision["threshold_snapshot"]["infer_mode"] == "OVERLAY_DETERIORATION_BEAR"
+
+    def test_neutral_stable_still_blocks_without_direction(self, engine, monkeypatch):
+        """Neutral+stable should remain blocked when fallback delta and memory do not resolve direction."""
+        self._wire_vass_host(
+            engine,
+            monkeypatch,
+            overlay="STABLE",
+        )
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=56.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(
+                overlay="STABLE", transition_score=56.0, momentum_roc=-0.01
+            ),
+        )
+
+        assert result is None
+
+    def test_neutral_stable_low_score_negative_momentum_rescues_bearish(self, engine, monkeypatch):
+        """Stable neutral tape should rescue bearish VASS when the score is already weak and momentum remains negative."""
+        decisions = self._wire_vass_host(
+            engine,
+            monkeypatch,
+            overlay="STABLE",
+        )
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=48.5,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(
+                overlay="STABLE",
+                transition_score=48.5,
+                momentum_roc=-0.01,
+            ),
+        )
+
+        assert result is not None
+        assert result[0] == OptionDirection.PUT
+        assert result[1] == "BEARISH"
+        infer_decision = next(
+            decision for decision in decisions if decision["gate_name"] == "VASS_NEUTRAL_FALLBACK"
+        )
+        assert infer_decision["threshold_snapshot"]["infer_mode"] == "STABLE_LEVEL_BEAR"
+
+    def test_existing_bullish_resolution_is_not_overridden(self, engine, monkeypatch):
+        """A pre-resolved bullish direction should not be replaced by the deterioration bear bias."""
+        self._wire_vass_host(
+            engine,
+            monkeypatch,
+            overlay="DETERIORATION",
+            conviction=(True, "BULLISH", "CONVICTION:BULLISH"),
+            current_vix=15.0,
+        )
+        monkeypatch.setattr(config, "VASS_USE_CONVICTION_ONLY_DIRECTION", True)
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=56.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(
+                overlay="DETERIORATION",
+                delta=0.0,
+                momentum_roc=-0.01,
+            ),
+        )
+
+        assert result is not None
+        assert result[0] == OptionDirection.CALL
+        assert result[1] == "BULLISH"
+        assert result[8] == "BULLISH"
+
+
+class TestVASSStressBearishRescue:
+    """V12.33 stress+bullish dead zone should only rescue bearish VASS with negative delta confirmation."""
+
+    def _make_algorithm(self, current_vix: float = 28.0) -> SimpleNamespace:
+        return SimpleNamespace(
+            Time=datetime(2022, 6, 13, 10, 30, 0),
+            Log=lambda *_args, **_kwargs: None,
+            _current_vix=current_vix,
+        )
+
+    def _make_transition_ctx(
+        self,
+        *,
+        overlay: str = "STRESS",
+        delta: float = -1.2,
+        transition_score: float = 60.0,
+        momentum_roc: float = -0.02,
+    ) -> dict:
+        return {
+            "transition_overlay": overlay,
+            "delta": delta,
+            "transition_score": transition_score,
+            "effective_score": transition_score,
+            "momentum_roc": momentum_roc,
+        }
+
+    def _wire_vass_host(
+        self,
+        engine: OptionsEngine,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        overlay: str = "STRESS",
+        macro_direction: str = "BULLISH",
+        current_vix: float = 28.0,
+    ) -> tuple[list[dict], dict]:
+        decisions: list[dict] = []
+        captured: dict = {}
+        engine.algorithm = self._make_algorithm(current_vix=current_vix)
+
+        monkeypatch.setattr(config, "VASS_USE_CONVICTION_ONLY_DIRECTION", False)
+        monkeypatch.setattr(config, "VASS_NEUTRAL_FALLBACK_DIRECTION_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_NEUTRAL_DIRECTION_MEMORY_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_STRESS_BEAR_RESCUE_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_STRESS_BEAR_RESCUE_DELTA_MIN", 0.5)
+        monkeypatch.setattr(config, "VASS_STRESS_BEAR_RESCUE_SCORE_MAX", 65.0)
+
+        engine._record_regime_decision = lambda **kwargs: decisions.append(kwargs)
+        engine.evaluate_transition_policy_block = lambda **kwargs: (None, "")
+        engine.update_iv_sensor = lambda *_args, **_kwargs: None
+        engine.get_iv_conviction = lambda: (False, None, "")
+        engine.get_macro_direction = lambda _regime_score: macro_direction
+        engine.get_regime_overlay_state = lambda vix_current, regime_score: overlay
+        real_resolver = OptionsEngine.resolve_trade_signal.__get__(engine, OptionsEngine)
+
+        def wrapped_resolver(**kwargs):
+            captured.update(kwargs)
+            return real_resolver(**kwargs)
+
+        engine.resolve_trade_signal = wrapped_resolver
+        return decisions, captured
+
+    def test_stress_bullish_macro_with_negative_delta_rescues_bearish_vass(
+        self, engine, monkeypatch
+    ):
+        decisions, captured = self._wire_vass_host(engine, monkeypatch)
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=60.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(delta=-1.2, transition_score=60.0),
+        )
+
+        assert result is not None
+        assert result[0] == OptionDirection.PUT
+        assert result[1] == "BEARISH"
+        assert result[8] == "BEARISH"
+        assert captured["engine_direction"] == "BEARISH"
+        assert captured["macro_direction"] == "NEUTRAL"
+        rescue_decision = next(
+            decision for decision in decisions if decision["gate_name"] == "VASS_STRESS_BEAR_RESCUE"
+        )
+        assert rescue_decision["threshold_snapshot"]["delta"] == -1.2
+
+    def test_stress_bullish_macro_without_enough_negative_delta_still_blocks(
+        self, engine, monkeypatch
+    ):
+        self._wire_vass_host(engine, monkeypatch)
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=60.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(delta=-0.3, transition_score=60.0),
+        )
+
+        assert result is None
+
+    def test_stress_bullish_macro_high_score_does_not_force_bearish(self, engine, monkeypatch):
+        self._wire_vass_host(engine, monkeypatch)
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=66.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(delta=-1.4, transition_score=66.0),
+        )
+
+        assert result is None
+
+    def test_stress_neutral_macro_with_negative_delta_rescues_bearish_vass(
+        self, engine, monkeypatch
+    ):
+        decisions, captured = self._wire_vass_host(
+            engine,
+            monkeypatch,
+            overlay="STRESS",
+            macro_direction="NEUTRAL",
+        )
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=60.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(delta=-0.6, transition_score=60.0),
+        )
+
+        assert result is not None
+        assert result[0] == OptionDirection.PUT
+        assert result[1] == "BEARISH"
+        assert result[8] == "BEARISH"
+        assert captured["engine_direction"] == "BEARISH"
+        assert captured["macro_direction"] == "NEUTRAL"
+        rescue_decision = next(
+            decision
+            for decision in decisions
+            if decision["gate_name"] == "VASS_NEUTRAL_STRESS_BEAR_RESCUE"
+        )
+        assert rescue_decision["threshold_snapshot"]["delta"] == -0.6
+
+    def test_early_stress_neutral_macro_with_negative_delta_rescues_bearish_vass(
+        self, engine, monkeypatch
+    ):
+        decisions, captured = self._wire_vass_host(
+            engine,
+            monkeypatch,
+            overlay="EARLY_STRESS",
+            macro_direction="NEUTRAL",
+        )
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=59.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(
+                overlay="EARLY_STRESS",
+                delta=-0.7,
+                transition_score=59.0,
+            ),
+        )
+
+        assert result is not None
+        assert result[0] == OptionDirection.PUT
+        assert result[1] == "BEARISH"
+        assert captured["engine_direction"] == "BEARISH"
+        assert captured["macro_direction"] == "NEUTRAL"
+        assert any(
+            decision["gate_name"] == "VASS_NEUTRAL_STRESS_BEAR_RESCUE" for decision in decisions
+        )
+
+
+class TestVASSDeteriorationBearHandoff:
+    """V12.37: hand off deterioration-blocked bullish VASS routes into bearish with confirmation."""
+
+    def _make_algorithm(self, current_vix: float = 20.0) -> SimpleNamespace:
+        return SimpleNamespace(
+            Time=datetime(2022, 6, 13, 10, 30, 0),
+            Log=lambda *_args, **_kwargs: None,
+            _current_vix=current_vix,
+        )
+
+    def _make_transition_ctx(
+        self,
+        *,
+        overlay: str = "DETERIORATION",
+        delta: float = -0.6,
+        transition_score: float = 60.0,
+        momentum_roc: float = -0.01,
+    ) -> dict:
+        return {
+            "transition_overlay": overlay,
+            "delta": delta,
+            "transition_score": transition_score,
+            "effective_score": transition_score,
+            "momentum_roc": momentum_roc,
+        }
+
+    def _wire_vass_host(
+        self,
+        engine: OptionsEngine,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        macro_direction: str = "BULLISH",
+        conviction: tuple = (False, None, ""),
+    ) -> list[dict]:
+        decisions: list[dict] = []
+        engine.algorithm = self._make_algorithm()
+
+        monkeypatch.setattr(config, "VASS_USE_CONVICTION_ONLY_DIRECTION", False)
+        monkeypatch.setattr(config, "VASS_DETERIORATION_BEAR_HANDOFF_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_DETERIORATION_BEAR_HANDOFF_DELTA_MIN", 0.5)
+        monkeypatch.setattr(config, "VASS_DETERIORATION_BEAR_HANDOFF_SCORE_MAX", 62.0)
+        monkeypatch.setattr(config, "VASS_DETERIORATION_BEAR_HANDOFF_MOMENTUM_MAX", -0.008)
+
+        engine._record_regime_decision = lambda **kwargs: decisions.append(kwargs)
+        engine.update_iv_sensor = lambda *_args, **_kwargs: None
+        engine.get_iv_conviction = lambda: conviction
+        engine.get_macro_direction = lambda _regime_score: macro_direction
+        engine.get_regime_overlay_state = lambda vix_current, regime_score: "NORMAL"
+        return decisions
+
+    def test_deterioration_block_hands_off_bullish_vass_to_bearish(self, engine, monkeypatch):
+        decisions = self._wire_vass_host(engine, monkeypatch)
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=60.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(
+                overlay="DETERIORATION",
+                delta=-0.6,
+                transition_score=60.0,
+                momentum_roc=-0.01,
+            ),
+        )
+
+        assert result is not None
+        assert result[0] == OptionDirection.PUT
+        assert result[1] == "BEARISH"
+        assert result[8] == "BEARISH"
+        handoff_decision = next(
+            decision
+            for decision in decisions
+            if decision["gate_name"] == "VASS_DETERIORATION_BEAR_HANDOFF"
+        )
+        assert handoff_decision["threshold_snapshot"]["delta"] == -0.6
+
+    def test_deterioration_block_without_enough_confirmation_still_blocks(
+        self, engine, monkeypatch
+    ):
+        self._wire_vass_host(engine, monkeypatch)
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=60.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(
+                overlay="DETERIORATION",
+                delta=-0.3,
+                transition_score=60.0,
+                momentum_roc=-0.01,
+            ),
+        )
+
+        assert result is None
+
+    def test_deterioration_block_does_not_override_bullish_conviction(self, engine, monkeypatch):
+        decisions = self._wire_vass_host(
+            engine,
+            monkeypatch,
+            conviction=(True, "BULLISH", "CONVICTION:BULLISH"),
+        )
+        monkeypatch.setattr(config, "VASS_USE_CONVICTION_ONLY_DIRECTION", True)
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=60.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(
+                overlay="DETERIORATION",
+                delta=-0.8,
+                transition_score=60.0,
+                momentum_roc=-0.01,
+            ),
+        )
+
+        assert result is None
+        assert not any(
+            decision["gate_name"] == "VASS_DETERIORATION_BEAR_HANDOFF" for decision in decisions
+        )
+
+
 class TestOvernightGapProtectionExit:
     """Overnight gap-protection exit metadata for VASS spread closes."""
 
@@ -4656,7 +6143,7 @@ class TestOvernightGapProtectionExit:
         engine._spread_position = self._make_credit_spread()
         engine._get_regime_transition_context = lambda: {"effective_score": 55.0}
         signals = engine.check_overnight_gap_protection_exit(
-            current_vix=22.7,
+            current_vix=30.5,
             current_date="2024-08-07",
         )
 
@@ -4722,6 +6209,47 @@ class TestBearPutProfitTargetScoping:
             regime_at_entry=62.0,
         )
 
+    def _make_bull_put_credit_spread(self) -> SpreadPosition:
+        """Build a bullish put credit spread for exit-scoping regressions."""
+        long_put = OptionContract(
+            symbol="QQQ 271231P00295000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=295.0,
+            expiry="2027-12-31",
+            delta=-0.18,
+            bid=1.10,
+            ask=1.25,
+            mid_price=1.18,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        short_put = OptionContract(
+            symbol="QQQ 271231P00300000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=-0.32,
+            bid=2.60,
+            ask=2.80,
+            mid_price=2.70,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        return SpreadPosition(
+            long_leg=long_put,
+            short_leg=short_put,
+            spread_type="BULL_PUT_CREDIT",
+            net_debit=-1.50,
+            max_profit=1.50,
+            width=5.0,
+            entry_time="2027-12-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=3,
+            regime_at_entry=65.0,
+        )
+
     def test_bear_put_profit_target_ignores_intrinsic_override(self, engine, monkeypatch):
         """BEAR_PUT profit target must use tradeable mark, not intrinsic override."""
         long_put = OptionContract(
@@ -4773,6 +6301,47 @@ class TestBearPutProfitTargetScoping:
             vix_current=20.0,
             current_dte=34,
             underlying_price=289.25,
+        )
+
+        assert result is None
+
+    def test_overlay_stress_exit_does_not_force_bull_put_credit(self, engine, monkeypatch):
+        """V12.33: OVERLAY_STRESS should remain debit-only and not hard-exit bullish put credits."""
+        engine._spread_position = self._make_bull_put_credit_spread()
+        monkeypatch.setattr(config, "SPREAD_OVERLAY_STRESS_EXIT_ENABLED", True)
+        monkeypatch.setattr(config, "SWING_VIX_SPIKE_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MARK_STOP_EXITS", False)
+        engine.get_regime_overlay_state = lambda vix_current, regime_score: "STRESS"
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=1.23,
+            short_leg_price=2.70,
+            regime_score=55.0,
+            vix_current=28.0,
+            current_dte=21,
+        )
+
+        assert result is None
+
+    def test_vix_spike_exit_does_not_force_bull_put_credit(self, engine, monkeypatch):
+        """V12.33: VIX spike exit should remain debit-only and not auto-close bullish put credits."""
+        engine._spread_position = self._make_bull_put_credit_spread()
+        monkeypatch.setattr(config, "SPREAD_OVERLAY_STRESS_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "SWING_VIX_SPIKE_EXIT_ENABLED", True)
+        monkeypatch.setattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MARK_STOP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MFE_LOCK_EXITS", False)
+        monkeypatch.setattr(config, "SWING_VIX_SPIKE_EXIT_LEVEL", 25.0)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=1.23,
+            short_leg_price=2.70,
+            regime_score=65.0,
+            vix_current=28.0,
+            current_dte=21,
         )
 
         assert result is None
@@ -4892,6 +6461,124 @@ class TestBearPutProfitTargetScoping:
         assert spread.highest_pnl_max_profit_pct < 0.45
         assert spread.mfe_lock_tier == 0
 
+    def test_bear_put_mfe_lock_requires_positive_tradeable_pnl(self, engine, monkeypatch):
+        """BEAR_PUT MFE locks must not fire while tradeable P&L is still negative."""
+        long_put = OptionContract(
+            symbol="QQQ 271231P00293000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=293.0,
+            expiry="2027-12-31",
+            delta=-0.60,
+            bid=10.20,
+            ask=10.50,
+            mid_price=10.35,
+            open_interest=5000,
+            days_to_expiry=34,
+        )
+        short_put = OptionContract(
+            symbol="QQQ 271231P00291000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=291.0,
+            expiry="2027-12-31",
+            delta=-0.45,
+            bid=9.98,
+            ask=10.02,
+            mid_price=10.00,
+            open_interest=5000,
+            days_to_expiry=34,
+        )
+        spread = SpreadPosition(
+            long_leg=long_put,
+            short_leg=short_put,
+            spread_type="BEAR_PUT_DEBIT",
+            net_debit=0.87,
+            max_profit=1.13,
+            width=2.0,
+            entry_time="2027-12-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=15,
+            regime_at_entry=40.0,
+        )
+        spread.highest_pnl_max_profit_pct = 0.55
+        spread.mfe_lock_tier = 2
+        engine._spread_position = spread
+        monkeypatch.setattr(config, "VASS_ENABLE_PROFIT_TARGET_EXITS", False)
+        monkeypatch.setattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=10.35,
+            short_leg_price=10.00,
+            regime_score=40.0,
+            vix_current=20.0,
+            current_dte=34,
+            underlying_price=289.25,
+        )
+
+        assert result is None
+        assert spread.mfe_lock_tier == 2
+
+    def test_bear_put_high_vix_mfe_floor_uses_tighter_override(self, engine, monkeypatch):
+        """BEAR_PUT uses the tighter high-VIX MFE floor override before exiting."""
+        long_put = OptionContract(
+            symbol="QQQ 271231P00293000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=293.0,
+            expiry="2027-12-31",
+            delta=-0.60,
+            bid=10.30,
+            ask=10.40,
+            mid_price=10.35,
+            open_interest=5000,
+            days_to_expiry=34,
+        )
+        short_put = OptionContract(
+            symbol="QQQ 271231P00291000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=291.0,
+            expiry="2027-12-31",
+            delta=-0.45,
+            bid=8.99,
+            ask=9.01,
+            mid_price=9.00,
+            open_interest=5000,
+            days_to_expiry=34,
+        )
+        spread = SpreadPosition(
+            long_leg=long_put,
+            short_leg=short_put,
+            spread_type="BEAR_PUT_DEBIT",
+            net_debit=0.87,
+            max_profit=1.13,
+            width=2.0,
+            entry_time="2027-12-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=15,
+            regime_at_entry=40.0,
+        )
+        spread.highest_pnl_max_profit_pct = 0.55
+        spread.mfe_lock_tier = 2
+        engine._spread_position = spread
+        monkeypatch.setattr(config, "VASS_ENABLE_PROFIT_TARGET_EXITS", False)
+        monkeypatch.setattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=10.35,
+            short_leg_price=9.00,
+            regime_score=40.0,
+            vix_current=30.0,
+            current_dte=34,
+            underlying_price=289.25,
+        )
+
+        assert result is not None
+        assert "MFE_LOCK_T2" in str(result[0].reason)
+
     def test_bull_call_mfe_and_trail_still_use_existing_debit_path(self, engine, monkeypatch):
         """BULL_CALL trail/MFE tracking remains on the legacy debit mark path."""
         long_call = OptionContract(
@@ -4949,6 +6636,555 @@ class TestBearPutProfitTargetScoping:
         assert result is None
         assert spread.highest_pnl_max_profit_pct >= 0.45
         assert spread.mfe_lock_tier == 2
+
+    def test_bear_call_credit_regime_break_uses_credit_buffer(self, engine, monkeypatch):
+        """BEAR_CALL_CREDIT should not flicker-exit just above the base bear ceiling."""
+        long_call = OptionContract(
+            symbol="QQQ 271231C00310000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=310.0,
+            expiry="2027-12-31",
+            delta=0.15,
+            bid=1.00,
+            ask=1.10,
+            mid_price=1.05,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        short_call = OptionContract(
+            symbol="QQQ 271231C00305000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=305.0,
+            expiry="2027-12-31",
+            delta=0.30,
+            bid=2.00,
+            ask=2.10,
+            mid_price=2.05,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        spread = SpreadPosition(
+            long_leg=long_call,
+            short_leg=short_call,
+            spread_type="BEAR_CALL_CREDIT",
+            net_debit=-1.50,
+            max_profit=1.50,
+            width=5.0,
+            entry_time="2027-12-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=3,
+            regime_at_entry=40.0,
+        )
+        engine._spread_position = spread
+        monkeypatch.setattr(config, "VASS_ENABLE_PROFIT_TARGET_EXITS", False)
+        monkeypatch.setattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=1.05,
+            short_leg_price=2.05,
+            regime_score=50.5,
+            vix_current=18.0,
+            current_dte=21,
+            underlying_price=300.0,
+        )
+
+        assert result is None
+
+    def test_bear_call_credit_regime_break_still_exits_above_buffer(self, engine, monkeypatch):
+        """BEAR_CALL_CREDIT should still exit once regime rises beyond the credit buffer."""
+        long_call = OptionContract(
+            symbol="QQQ 271231C00310000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=310.0,
+            expiry="2027-12-31",
+            delta=0.15,
+            bid=1.00,
+            ask=1.10,
+            mid_price=1.05,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        short_call = OptionContract(
+            symbol="QQQ 271231C00305000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=305.0,
+            expiry="2027-12-31",
+            delta=0.30,
+            bid=2.00,
+            ask=2.10,
+            mid_price=2.05,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        spread = SpreadPosition(
+            long_leg=long_call,
+            short_leg=short_call,
+            spread_type="BEAR_CALL_CREDIT",
+            net_debit=-1.50,
+            max_profit=1.50,
+            width=5.0,
+            entry_time="2027-12-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=3,
+            regime_at_entry=40.0,
+        )
+        engine._spread_position = spread
+        monkeypatch.setattr(config, "VASS_ENABLE_PROFIT_TARGET_EXITS", False)
+        monkeypatch.setattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=1.05,
+            short_leg_price=2.05,
+            regime_score=51.1,
+            vix_current=18.0,
+            current_dte=21,
+            underlying_price=300.0,
+        )
+
+        assert result is not None
+        assert "VASS_REGIME_BREAK_BEAR" in str(result[0].reason)
+
+    def test_bear_call_credit_entry_uses_credit_buffer(self, engine, monkeypatch):
+        """BEAR_CALL_CREDIT entry should tolerate the same 1-point hysteresis buffer."""
+        monkeypatch.setattr(config, "VASS_REGIME_BREAK_EXIT_ENABLED", True)
+
+        result = engine._vass_entry_engine._bear_credit_block_details(
+            strategy=SpreadStrategy.BEAR_CALL_CREDIT,
+            regime_score=50.5,
+            overlay_state="DETERIORATION",
+            algorithm=SimpleNamespace(),
+        )
+
+        assert result is None
+
+    def test_bear_call_credit_entry_still_blocks_above_credit_buffer(self, engine, monkeypatch):
+        """BEAR_CALL_CREDIT entry should still block once regime exceeds the buffered ceiling."""
+        monkeypatch.setattr(config, "VASS_REGIME_BREAK_EXIT_ENABLED", True)
+
+        result = engine._vass_entry_engine._bear_credit_block_details(
+            strategy=SpreadStrategy.BEAR_CALL_CREDIT,
+            regime_score=51.1,
+            overlay_state="DETERIORATION",
+            algorithm=SimpleNamespace(),
+        )
+
+        assert result is not None
+        assert result[0] == "R_VASS_BEAR_CREDIT_REGIME_BLOCK"
+
+    def test_bear_put_time_stop_skips_profitable_trade_with_meaningful_mfe(
+        self, engine, monkeypatch
+    ):
+        """BEAR_PUT time stop should not cut a still-profitable trade with meaningful MFE."""
+        long_put = OptionContract(
+            symbol="QQQ 271231P00293000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=293.0,
+            expiry="2027-12-31",
+            delta=-0.60,
+            bid=10.20,
+            ask=10.50,
+            mid_price=10.35,
+            open_interest=5000,
+            days_to_expiry=34,
+        )
+        short_put = OptionContract(
+            symbol="QQQ 271231P00291000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=291.0,
+            expiry="2027-12-31",
+            delta=-0.45,
+            bid=9.10,
+            ask=9.20,
+            mid_price=9.15,
+            open_interest=5000,
+            days_to_expiry=34,
+        )
+        spread = SpreadPosition(
+            long_leg=long_put,
+            short_leg=short_put,
+            spread_type="BEAR_PUT_DEBIT",
+            net_debit=0.87,
+            max_profit=1.13,
+            width=2.0,
+            entry_time="2027-12-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=15,
+            regime_at_entry=40.0,
+        )
+        spread.highest_pnl_max_profit_pct = 0.30
+        engine._spread_position = spread
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 12, 10, 13, 0, 0),
+            Log=lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(config, "VASS_ENABLE_PROFIT_TARGET_EXITS", False)
+        monkeypatch.setattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MFE_LOCK_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MARK_STOP_EXITS", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=10.35,
+            short_leg_price=9.15,
+            regime_score=40.0,
+            vix_current=20.0,
+            current_dte=34,
+            underlying_price=289.25,
+        )
+
+        assert result is None
+
+    def test_bear_put_time_stop_still_exits_non_positive_trade(self, engine, monkeypatch):
+        """BEAR_PUT time stop should still exit stale losing/flat trades."""
+        long_put = OptionContract(
+            symbol="QQQ 271231P00293000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=293.0,
+            expiry="2027-12-31",
+            delta=-0.60,
+            bid=10.00,
+            ask=10.10,
+            mid_price=10.05,
+            open_interest=5000,
+            days_to_expiry=34,
+        )
+        short_put = OptionContract(
+            symbol="QQQ 271231P00291000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=291.0,
+            expiry="2027-12-31",
+            delta=-0.45,
+            bid=9.35,
+            ask=9.45,
+            mid_price=9.40,
+            open_interest=5000,
+            days_to_expiry=34,
+        )
+        spread = SpreadPosition(
+            long_leg=long_put,
+            short_leg=short_put,
+            spread_type="BEAR_PUT_DEBIT",
+            net_debit=0.87,
+            max_profit=1.13,
+            width=2.0,
+            entry_time="2027-12-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=15,
+            regime_at_entry=40.0,
+        )
+        spread.highest_pnl_max_profit_pct = 0.30
+        engine._spread_position = spread
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 12, 10, 13, 0, 0),
+            Log=lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(config, "VASS_ENABLE_PROFIT_TARGET_EXITS", False)
+        monkeypatch.setattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MFE_LOCK_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MARK_STOP_EXITS", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=10.05,
+            short_leg_price=9.40,
+            regime_score=40.0,
+            vix_current=20.0,
+            current_dte=34,
+            underlying_price=289.25,
+        )
+
+        assert result is not None
+        assert "SPREAD_TIME_STOP" in str(result[0].reason)
+
+    def test_bear_put_time_stop_bypass_still_allows_later_exits(self, engine, monkeypatch):
+        """Skipping BEAR_PUT time stop must still evaluate later exit conditions."""
+        long_put = OptionContract(
+            symbol="QQQ 271231P00293000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=293.0,
+            expiry="2027-12-31",
+            delta=-0.60,
+            bid=10.20,
+            ask=10.50,
+            mid_price=10.35,
+            open_interest=5000,
+            days_to_expiry=3,
+        )
+        short_put = OptionContract(
+            symbol="QQQ 271231P00291000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=291.0,
+            expiry="2027-12-31",
+            delta=-0.45,
+            bid=9.10,
+            ask=9.20,
+            mid_price=9.15,
+            open_interest=5000,
+            days_to_expiry=3,
+        )
+        spread = SpreadPosition(
+            long_leg=long_put,
+            short_leg=short_put,
+            spread_type="BEAR_PUT_DEBIT",
+            net_debit=0.87,
+            max_profit=1.13,
+            width=2.0,
+            entry_time="2027-12-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=15,
+            regime_at_entry=40.0,
+        )
+        spread.highest_pnl_max_profit_pct = 0.30
+        engine._spread_position = spread
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 12, 10, 13, 0, 0),
+            Log=lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(config, "VASS_ENABLE_PROFIT_TARGET_EXITS", False)
+        monkeypatch.setattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MFE_LOCK_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MARK_STOP_EXITS", False)
+        monkeypatch.setattr(config, "SPREAD_REGIME_DETERIORATION_EXIT_ENABLED", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=10.35,
+            short_leg_price=9.15,
+            regime_score=44.0,
+            vix_current=20.0,
+            current_dte=3,
+            underlying_price=289.25,
+        )
+
+        assert result is not None
+        assert "DTE_EXIT" in str(result[0].reason)
+
+    def test_bull_debit_stale_no_progress_exit(self, engine, monkeypatch):
+        """Bull call debits should exit as stale after 10 days with weak progress."""
+        long_call = OptionContract(
+            symbol="QQQ 271231C00300000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=0.35,
+            bid=5.10,
+            ask=5.30,
+            mid_price=5.20,
+            open_interest=5000,
+            days_to_expiry=25,
+        )
+        short_call = OptionContract(
+            symbol="QQQ 271231C00305000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=305.0,
+            expiry="2027-12-31",
+            delta=0.20,
+            bid=2.90,
+            ask=3.10,
+            mid_price=3.00,
+            open_interest=5000,
+            days_to_expiry=25,
+        )
+        spread = SpreadPosition(
+            long_leg=long_call,
+            short_leg=short_call,
+            spread_type="BULL_CALL_DEBIT",
+            net_debit=2.50,
+            max_profit=2.50,
+            width=5.0,
+            entry_time="2027-01-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=2,
+            regime_at_entry=62.0,
+        )
+        spread.highest_pnl_max_profit_pct = 0.15
+        engine._spread_position = spread
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 1, 11, 15, 0, 0),
+            Log=lambda *_args, **_kwargs: None,
+        )
+
+        monkeypatch.setattr(config, "VASS_ENABLE_PROFIT_TARGET_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MFE_LOCK_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MARK_STOP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_DAY4_EOD_EXITS", False)
+        monkeypatch.setattr(config, "VASS_DAY4_EOD_DECISION_ENABLED", False)
+        monkeypatch.setattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_REGIME_BREAK_EXIT_ENABLED", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=5.20,
+            short_leg_price=3.00,
+            regime_score=54.0,
+            vix_current=18.0,
+            current_dte=25,
+            underlying_price=299.0,
+        )
+
+        assert result is not None
+        assert "STALE_NO_PROGRESS_EXIT" in str(result[0].reason)
+
+    def test_bull_debit_stale_stop_skips_trade_with_meaningful_progress(self, engine, monkeypatch):
+        """Bull call debits with meaningful progress should bypass stale no-progress exit."""
+        long_call = OptionContract(
+            symbol="QQQ 271231C00300000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=0.35,
+            bid=5.10,
+            ask=5.30,
+            mid_price=5.20,
+            open_interest=5000,
+            days_to_expiry=25,
+        )
+        short_call = OptionContract(
+            symbol="QQQ 271231C00305000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=305.0,
+            expiry="2027-12-31",
+            delta=0.20,
+            bid=2.90,
+            ask=3.10,
+            mid_price=3.00,
+            open_interest=5000,
+            days_to_expiry=25,
+        )
+        spread = SpreadPosition(
+            long_leg=long_call,
+            short_leg=short_call,
+            spread_type="BULL_CALL_DEBIT",
+            net_debit=2.50,
+            max_profit=2.50,
+            width=5.0,
+            entry_time="2027-01-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=2,
+            regime_at_entry=62.0,
+        )
+        spread.highest_pnl_max_profit_pct = 0.25
+        engine._spread_position = spread
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 1, 11, 15, 0, 0),
+            Log=lambda *_args, **_kwargs: None,
+        )
+
+        monkeypatch.setattr(config, "VASS_ENABLE_PROFIT_TARGET_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MFE_LOCK_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MARK_STOP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_DAY4_EOD_EXITS", False)
+        monkeypatch.setattr(config, "VASS_DAY4_EOD_DECISION_ENABLED", False)
+        monkeypatch.setattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_REGIME_BREAK_EXIT_ENABLED", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=5.20,
+            short_leg_price=3.00,
+            regime_score=54.0,
+            vix_current=18.0,
+            current_dte=25,
+            underlying_price=299.0,
+        )
+
+        assert result is None
+
+
+class TestSpreadLifecycleCloseEvents:
+    """Tests for CLOSED lifecycle backfill on realized spread removal."""
+
+    def test_remove_spread_position_emits_closed_lifecycle(self):
+        """Removing a spread should emit a CLOSED lifecycle event when identity is present."""
+        engine = OptionsEngine(algorithm=None)
+        lifecycle = []
+        closed_ids = set()
+
+        def _mark_engine_signal_event(event_type, signal_id):
+            key = (str(event_type).upper(), signal_id)
+            if key in closed_ids:
+                return False
+            closed_ids.add(key)
+            return True
+
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 12, 10, 13, 0, 0),
+            Log=lambda *_args, **_kwargs: None,
+            _record_signal_lifecycle_event=lambda **kwargs: lifecycle.append(kwargs),
+            _mark_engine_signal_event=_mark_engine_signal_event,
+        )
+
+        long_put = OptionContract(
+            symbol="QQQ 271231P00293000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=293.0,
+            expiry="2027-12-31",
+            delta=-0.60,
+            bid=10.20,
+            ask=10.50,
+            mid_price=10.35,
+            open_interest=5000,
+            days_to_expiry=34,
+        )
+        short_put = OptionContract(
+            symbol="QQQ 271231P00291000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=291.0,
+            expiry="2027-12-31",
+            delta=-0.45,
+            bid=9.10,
+            ask=9.20,
+            mid_price=9.15,
+            open_interest=5000,
+            days_to_expiry=34,
+        )
+        spread = SpreadPosition(
+            long_leg=long_put,
+            short_leg=short_put,
+            spread_type="BEAR_PUT",
+            net_debit=0.87,
+            max_profit=1.13,
+            width=2.0,
+            entry_time="2027-12-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=1,
+            regime_at_entry=40.0,
+            signal_id="sig-closed-1",
+            trace_id="trace-closed-1",
+            signal_direction="BEARISH",
+            signal_strategy="BEAR_PUT_DEBIT",
+            signal_reason="synthetic close test",
+        )
+        engine._spread_positions = [spread]
+        engine._spread_position = spread
+
+        removed = engine.remove_spread_position(spread_key=engine._build_spread_key(spread))
+
+        assert removed is spread
+        assert lifecycle
+        event = lifecycle[-1]
+        assert event["event"] == "CLOSED"
+        assert event["signal_id"] == "sig-closed-1"
+        assert event["trace_id"] == "trace-closed-1"
+        assert event["strategy"] == "BEAR_PUT_DEBIT"
 
 
 class TestAssignmentMarginBufferScoping:
@@ -5139,10 +7375,10 @@ class TestAssignmentMarginBufferScoping:
         assert result is not None
         assert "MARGIN_BUFFER_INSUFFICIENT" in str(result[0].reason)
 
-    def test_overnight_gap_exit_skips_fresh_bear_credit_in_bear_regime(self, engine):
-        """Fresh bearish spreads should not hit OGP solely due to elevated VIX in bear regimes."""
+    def test_overnight_gap_exit_skips_fresh_bear_credit_regardless_of_regime(self, engine):
+        """Fresh bearish spreads should bypass the 22 VIX OGP rail and keep only the disaster rail."""
         engine._spread_position = self._make_credit_spread()
-        engine._get_regime_transition_context = lambda: {"effective_score": 40.0}
+        engine._get_regime_transition_context = lambda: {"effective_score": 58.0}
 
         signals = engine.check_overnight_gap_protection_exit(
             current_vix=22.7,
@@ -5151,8 +7387,25 @@ class TestAssignmentMarginBufferScoping:
 
         assert signals is None
 
+    def test_overnight_gap_exit_still_closes_fresh_bull_credit_at_22_vix(self, engine):
+        """Fresh bullish spreads should still use the standard fresh-trade OGP rail."""
+        spread = self._make_credit_spread()
+        spread.spread_type = "BULL_PUT_CREDIT"
+        spread.net_debit = -1.25
+        engine._spread_position = spread
+        engine._get_regime_transition_context = lambda: {"effective_score": 40.0}
+
+        signals = engine.check_overnight_gap_protection_exit(
+            current_vix=22.7,
+            current_date="2024-08-07",
+        )
+
+        assert signals is not None
+        assert len(signals) == 1
+        assert signals[0].metadata["spread_exit_code"] == "OVERNIGHT_GAP_PROTECTION"
+
     def test_overnight_gap_exit_raises_bear_put_close_all_threshold_only(self, engine, monkeypatch):
-        """BEAR_PUT close-all OGP should be relaxed in bear regimes without changing other spreads."""
+        """BEAR_PUT close-all OGP should be relaxed in bear regimes without changing bullish spreads."""
         spread = self._make_credit_spread()
         spread.spread_type = "BEAR_PUT_DEBIT"
         spread.net_debit = 1.40
@@ -5167,7 +7420,10 @@ class TestAssignmentMarginBufferScoping:
 
         assert signals is None
 
-        engine._spread_position = self._make_credit_spread()
+        other_spread = self._make_credit_spread()
+        other_spread.spread_type = "BULL_PUT_CREDIT"
+        other_spread.net_debit = -1.25
+        engine._spread_position = other_spread
         engine._get_regime_transition_context = lambda: {"effective_score": 40.0}
         monkeypatch.setattr(config, "VASS_CREDIT_THETA_FIRST_ENABLED", False)
 
@@ -5178,6 +7434,48 @@ class TestAssignmentMarginBufferScoping:
 
         assert other_signals is not None
         assert len(other_signals) == 1
+
+    def test_overnight_gap_exit_raises_bear_call_credit_close_all_threshold(
+        self, engine, monkeypatch
+    ):
+        """BEAR_CALL_CREDIT close-all OGP should also be relaxed in bear regimes."""
+        spread = self._make_credit_spread()
+        spread.spread_type = "BEAR_CALL_CREDIT"
+        spread.net_debit = -1.25
+        engine._spread_position = spread
+        engine._get_regime_transition_context = lambda: {"effective_score": 40.0}
+        monkeypatch.setattr(config, "BEAR_CALL_CREDIT_OVERNIGHT_VIX_CLOSE_ALL_BEAR_REGIME", 40.0)
+        monkeypatch.setattr(config, "VASS_CREDIT_THETA_FIRST_ENABLED", False)
+
+        signals = engine.check_overnight_gap_protection_exit(
+            current_vix=30.0,
+            current_date="2024-08-07",
+        )
+
+        assert signals is None
+
+        signals = engine.check_overnight_gap_protection_exit(
+            current_vix=40.0,
+            current_date="2024-08-07",
+        )
+
+        assert signals is not None
+        assert len(signals) == 1
+
+    def test_overnight_gap_exit_skips_fresh_bear_put_named_spread_in_bear_regime(self, engine):
+        """Stored BEAR_PUT spread types should qualify for the fresh-trade bearish OGP exemption."""
+        spread = self._make_credit_spread()
+        spread.spread_type = "BEAR_PUT"
+        spread.net_debit = 1.40
+        engine._spread_position = spread
+        engine._get_regime_transition_context = lambda: {"effective_score": 40.0}
+
+        signals = engine.check_overnight_gap_protection_exit(
+            current_vix=22.7,
+            current_date="2024-08-07",
+        )
+
+        assert signals is None
 
     def test_overnight_gap_exit_keeps_bear_put_disaster_rail_at_override(self, engine, monkeypatch):
         """BEAR_PUT bear-regime carveout should still close when the higher disaster rail is reached."""
@@ -5235,11 +7533,11 @@ class TestBearPutWidthScoping:
         assert bull_min == 4.0
         assert bear_min == 5.0
 
-    def test_bear_put_debit_width_cap_relax_is_scoped(self, engine, monkeypatch):
-        """BEAR_PUT should get only a modest D/W cap relax relative to other debit spreads."""
+    def test_bear_put_debit_uses_dedicated_dw_cap_table(self, engine, monkeypatch):
+        """V12.33: BEAR_PUT uses its own D/W cap table reflecting put-skew economics."""
         monkeypatch.setattr(config, "SPREAD_DW_CAP_HIGH", 0.32)
-        monkeypatch.setattr(config, "BEAR_PUT_SPREAD_DW_CAP_BUMP", 0.04)
-        monkeypatch.setattr(config, "BEAR_PUT_SPREAD_DW_CAP_MAX", 0.46)
+        monkeypatch.setattr(config, "BEAR_PUT_DW_CAP_HIGH", 0.52)
+        monkeypatch.setattr(config, "BEAR_PUT_DW_CAP_PANIC", 0.50)
 
         bull_cap = engine._get_spread_debit_width_cap(
             27.0,
@@ -5253,7 +7551,18 @@ class TestBearPutWidthScoping:
         )
 
         assert bull_cap == 0.32
-        assert bear_cap == 0.36
+        assert bear_cap == 0.52
+
+    def test_bear_put_dw_cap_panic_vix(self, engine, monkeypatch):
+        """BEAR_PUT D/W cap at VIX > 35 uses BEAR_PUT_DW_CAP_PANIC."""
+        monkeypatch.setattr(config, "SPREAD_DW_CAP_PANIC", 0.28)
+        monkeypatch.setattr(config, "BEAR_PUT_DW_CAP_PANIC", 0.50)
+
+        bull_cap = engine._get_spread_debit_width_cap(38.0, spread_type="BULL_CALL")
+        bear_cap = engine._get_spread_debit_width_cap(38.0, spread_type="BEAR_PUT")
+
+        assert bull_cap == 0.28
+        assert bear_cap == 0.50
 
 
 class TestVASSTransitionRecoveryScoping:

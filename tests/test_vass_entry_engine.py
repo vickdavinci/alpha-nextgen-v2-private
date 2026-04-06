@@ -252,6 +252,7 @@ def test_high_iv_sanity_guard_blocks_bull_call_debit_route():
     blocked = engine._should_block_high_iv_bull_debit_route(
         strategy=SpreadStrategy.BULL_CALL_DEBIT,
         iv_environment="HIGH",
+        current_vix=25.0,
         algorithm=algorithm,
         host=_Host(),
     )
@@ -259,3 +260,18 @@ def test_high_iv_sanity_guard_blocks_bull_call_debit_route():
     assert blocked is True
     assert any("R_ROUTE_SANITY_HIGH_IV_BULL_DEBIT" in msg for msg in logs)
     assert any(d.get("gate_name") == "VASS_ROUTE_SANITY_HIGH_IV_BULL_DEBIT" for d in decisions)
+
+
+def test_high_iv_sanity_guard_allows_low_vix_credit_reroute(monkeypatch):
+    engine = VASSEntryEngine()
+    monkeypatch.setattr(config, "BULL_PUT_CREDIT_MIN_VIX_FOR_ENTRY", 18.0)
+
+    blocked = engine._should_block_high_iv_bull_debit_route(
+        strategy=SpreadStrategy.BULL_CALL_DEBIT,
+        iv_environment="HIGH",
+        current_vix=17.0,
+        algorithm=SimpleNamespace(Log=lambda *_args, **_kwargs: None),
+        host=SimpleNamespace(_record_regime_decision=lambda **_kwargs: None),
+    )
+
+    assert blocked is False
