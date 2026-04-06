@@ -246,6 +246,7 @@ class TestBearPutHighIVPivot:
             overlay_state="EARLY_STRESS",
             regime_score=40.0,
             iv_environment="HIGH",
+            current_vix=20.0,
             spread_strategy_enum=SpreadStrategy,
             is_credit_strategy_func=_is_credit,
         )
@@ -268,6 +269,7 @@ class TestBearPutHighIVPivot:
             overlay_state="STABLE",
             regime_score=55.0,
             iv_environment="HIGH",
+            current_vix=20.0,
             spread_strategy_enum=SpreadStrategy,
             is_credit_strategy_func=_is_credit,
         )
@@ -289,6 +291,7 @@ class TestBearPutHighIVPivot:
             overlay_state="STABLE",
             regime_score=40.0,
             iv_environment="HIGH",
+            current_vix=20.0,
             spread_strategy_enum=SpreadStrategy,
             is_credit_strategy_func=_is_credit,
         )
@@ -300,6 +303,7 @@ class TestBearPutHighIVPivot:
             overlay_state="STABLE",
             regime_score=60.0,
             iv_environment="LOW",
+            current_vix=20.0,
             spread_strategy_enum=SpreadStrategy,
             is_credit_strategy_func=_is_credit,
         )
@@ -595,6 +599,7 @@ class TestEarlyStressRemixInteraction:
             overlay_state="EARLY_STRESS",
             regime_score=40.0,
             iv_environment="HIGH",
+            current_vix=20.0,
             spread_strategy_enum=SpreadStrategy,
             is_credit_strategy_func=_is_credit,
         )
@@ -617,6 +622,7 @@ class TestEarlyStressRemixInteraction:
             overlay_state="EARLY_STRESS",
             regime_score=55.0,
             iv_environment="HIGH",
+            current_vix=20.0,
             spread_strategy_enum=SpreadStrategy,
             is_credit_strategy_func=_is_credit,
         )
