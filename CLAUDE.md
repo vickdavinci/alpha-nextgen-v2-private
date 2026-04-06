@@ -14,33 +14,65 @@
 - Follow `PROCESS.md` for workflow, gates, commit contract, and backtest artifact process.
 - If any instruction here conflicts with `PROCESS.md` process enforcement, run `PROCESS.md` checks first.
 
-## Recent Work Log (V12.20)
+## Recent Work Log (V12.30 / V12.31 / V12.32)
 
-### Commits
+### V12.30: Bear/Credit Routing & Regime Alignment (16 commits)
 
-- `ca303c0`: Hardened intraday exit source tags and close-lane routing.
-- `300eb48`: Hardened option close retry tags and intraday quantity accounting.
+Fixed bear-side and credit-side VASS routing so options engine activates bearish/credit lanes when regime warrants it.
 
-### What was fixed
+**Key changes:**
+- **Assignment gate polarity flip** (`23b99a0`): Was blocking bear entries in bear regimes; flipped to enforce in bull, relax in bear
+- **VASS neutral fallback direction** (`56036af`): In macro NEUTRAL, infer direction from transition delta instead of blocking all entries
+- **BEAR_PUT preferred in high-IV bearish** (`9462ec5`): Routes to BEAR_PUT_DEBIT over BEAR_CALL_CREDIT when VIX high + bearish regime
+- **STRESS assignment gate relaxed** (`812ec87`): In true bear (score ≤ 45, VIX ≤ 30), skip OTM assignment gate
+- **BEAR_PUT high-IV pivot with fallback** (`4204b54`): If pivot to PUT finds no candidates, reverts to credit and retries
+- **Deep bear guard on neutral fallback** (`1bfdfe5`): When score ≤ 45, block BULLISH inference to preserve BEAR_PUT pivot
+- **Overlay state persistence** (`72d3180`): `_regime_overlay_state`, `enter_seq`, `sample_seq` survive restart
+- **Credit recovery derisk disabled** (`f03b247`): Transition derisk window turned off
+- **25 regression tests** (`e95c7ff`): Covering all V12.30 routing and gating changes
 
-- Intraday software exits now emit `OPT_INTRADAY` with lane metadata:
-  - `options_lane`
-  - `options_strategy`
-- Router close intent fallback no longer defaults single-leg `OPT` closes to VASS; it infers ITM/MICRO lane from live symbol tracking.
-- Cancel/invalid order paths now use full order-tag resolution (`_get_order_tag`) to recover OCO hints reliably.
-- OCO cancel detection is hardened to reduce false retry/escalation churn when broker drops tags.
-- Intraday snapshot accounting now supports stacked fills:
-  - quantity is aggregated across fills,
-  - entry price is blended,
-  - duplicate residual lane state rows are cleaned on close.
-- Exit P&L attribution now uses snapshot-corrected entry price/quantity when available.
+### V12.31: Scan Funnel Unclog + SAFE Hardening (14 commits)
 
-### V12.19 issue mapping
+**Strategy/Throughput:**
+- **Credit tail-cap gated to emergency windows** (`cacc53d`): In THETA_FIRST, only fire tail-cap in emergency VIX/regime windows
+- **Scan funnel unclogged** (`5028e7b`): Attempt-aware interval throttle reduces wasted `R_VASS_SCAN_INTERVAL_GUARD` burns by consuming scan budget only when candidate-scan work actually starts
+- **Resolver unclogged** (`658d232`): Soft neutral fallback + short direction memory reduce `R_VASS_RESOLVER_NO_TRADE`; this is the commit that materially improved bearish spread availability in neutral-macro tape
+- **QQQ invalidation threshold tuned** (`04b73a9`): 4.0% → 3.9% for earlier tail-loss detection
+- **BR-08 open-delay** (`68a84ac`): Profit-target exits deferred first 5 min after open (09:30-09:34)
+- **Adaptive insufficient-BP retry** (`2d634e5`): Broker-maintenance-based retry contract cap + cooldown
 
-- ITM closes mislabeled as `MICRO:RETRY_CANCELED_CLOSE`: mitigated via lane-aware bucket inference and tag path hardening.
-- Missing/weak tags on cancels: improved via `_get_order_tag` use in cancel/invalid handlers.
-- Buy-4/Sell-8 mismatch confusion: execution close quantity remains live-holdings based; accounting now handles stacked fills correctly.
-- Excess `MICRO:EMERG_OPTION_RETRY_EXHAUSTED`: reduced by improved OCO cancel classification and retry gating.
+**SAFE Track (Pre-Live Hardening):**
+- SAFE-01 through SAFE-06: Router rejection artifact schema, tag/trace backfill, deterministic incident IDs, lifecycle diag counters, exit code normalization, ObjectStore loader hardening
+- Follow-ups: Tighter invalid counter classification, `tag_origin` attribution
+
+### V12.31: Bear-Path Exit/Structure Fixes (7 commits)
+
+**Scoped BEAR_PUT / bear-regime fixes:**
+- **Bear-regime fresh OGP carveout** (`b84e56e`): Skip fresh-trade OGP for `BEAR_CALL_CREDIT` / `BEAR_PUT_DEBIT` when regime is already bearish; keep global `close_all` intact
+- **Put phantom-profit fix** (`7ef1515`): `BEAR_PUT` / `BEAR_PUT_DEBIT` profit-target eligibility now uses tradeable spread value instead of intrinsic-overridden valuation
+- **BEAR_PUT width widening** (`a28c46d`): Bias `BEAR_PUT` width target/min one strike wider and modestly relax bearish put D/W caps inside the existing selector/validator helpers
+- **BEAR_PUT close-all OGP override** (`db35600`): Raise bear-regime `close_all` OGP threshold to `40.0` only for `BEAR_PUT` / `BEAR_PUT_DEBIT`, leaving all other spread exits unchanged
+- **BEAR_PUT MFE/trail tradeable-value scoping** (`e8f0ca0`): `BEAR_PUT` / `BEAR_PUT_DEBIT` MFE-lock and trail evaluation now use tradeable spread value, preventing intrinsic-inflated early non-profit exits
+- **Assignment margin exit scoping** (`71c64e6`): Remove `MARGIN_BUFFER_INSUFFICIENT` forced exits for debit spreads and narrow the margin-buffer guard to near-expiry ITM credit spreads only
+- **Close-cancel ladder phase scoping** (`f2c5a01`): Reset the cancel budget only on `LIMIT -> COMBO_MARKET` promotion so combo-market gets its own rung without skipping directly to sequential fallback
+
+### V12.32: Transition Gate Narrowing (1 commit)
+
+- **VASS bear recovery hard-block scoped by flip bars** (`d7fa2c1`): Keep `VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY` only for the first two `RECOVERY` bars after an overlay flip, then fall through to the existing `TRANSITION_HANDOFF_PUT_THROTTLE`
+
+### Open P0 items (from V12.30 Plumbing Register)
+
+- BR-08 open-delay: implemented, needs A/B validation
+- QQQ invalidation tail-loss: threshold tuned, needs validation
+- Entry invalid insufficient-BP: adaptive retry implemented, needs zero-invalid validation
+- OGP too blunt for elevated VIX: first two steps implemented via fresh-trade carveout plus `BEAR_PUT` bear-regime `close_all` override, still needs validation
+- Put phantom-profit / early intrinsic-driven exits on `BEAR_PUT`: profit-target and MFE/trail first steps implemented, still need validation
+- BEAR_PUT width under skew: first-step implemented, still needs validation
+- Margin-buffer forced exits: first-step implemented via debit-path removal plus credit danger-zone scoping, still needs validation
+- Combo close cancel ladder: first-step phase scoping implemented, still needs validation
+- VASS bear recovery transition block: first-step implemented via early-bar-only hard block plus later handoff throttle, still needs validation
+
+See `docs/audits/logs/stage12.30/V12.30_PLUMBING_STRATEGY_STATUS.md` for full status register.
 
 ### Validation run
 
@@ -245,7 +277,7 @@ See `docs/specs/v2.1/v2-1-options-engine-design.txt` for Options Engine V2.1.1 d
 
 ```
 alpha-nextgen/
-├── main.py                     # QCAlgorithm entry point (~3,800 lines - V2.24.2)
+├── main.py                     # QCAlgorithm entry point (~2,900 lines - V12.31)
 ├── config.py                   # ALL tunable parameters
 ├── requirements.txt            # Python dependencies
 ├── requirements.lock           # Locked versions for reproducibility
@@ -374,6 +406,8 @@ V12.5 is an ongoing refactor decomposing the monolithic options engine into spec
   - VASS-specific anti-cluster/day-gap/swing filter guards
   - VASS lifecycle throttles that are not contract-economics checks
   - V12.5: VASS directional scan, candidate contract building, spread signal construction, leg selection
+  - V12.30: Neutral fallback direction inference, BEAR_PUT high-IV pivot, assignment gate polarity
+  - V12.31: Attempt-aware scan interval throttle, soft neutral fallback with direction memory
 - `MicroEntryEngine` (`engines/satellite/micro_entry_engine.py`) owns:
   - Micro intraday lane caps, friction gates, contract-selection validation
   - V12.5: Intraday entry execution and gating
@@ -384,6 +418,9 @@ V12.5 is an ongoing refactor decomposing the monolithic options engine into spec
   - Spread lifecycle management (hold guard, assignment risk, DTE close)
   - Shared spread economics and contract-quality validation (D/W caps, debit caps, sizing, margin checks)
   - `check_spread_entry_signal()` / `check_credit_spread_entry_signal()` final validation
+  - V12.27: Credit THETA_FIRST mode (hold guard, 2x-credit stop, guarded premarket ITM close)
+  - V12.28: Spread close intent persistence, retry ladder, preclear close-intent awareness
+  - V12.31: BR-08 profit-target open-delay, adaptive insufficient-BP retry sizing
 - `main.py` orchestrates flow: calls sub-engines for entry, `OptionsEngine` for exit/validation.
 
 ### Practical Rule For New Changes
@@ -393,11 +430,14 @@ V12.5 is an ongoing refactor decomposing the monolithic options engine into spec
 - If the logic is ITM momentum entry, put it in `ITMHorizonEngine`.
 - If the logic is spread exit/lifecycle or shared validation, keep it in `OptionsEngine`.
 
-### VASS Spread Exit Cascade (V12.4)
+### VASS Spread Exit Cascade (V12.31)
 
 The debit spread exit cascade runs in this priority order. **Higher priority exits prevent lower ones from firing.**
 
 ```
+OPEN DELAY (V12.31):
+  - Profit-target exits deferred during 09:30-09:34 (BR-08 open-delay)
+
 HOLD GUARD (if position < 1440 min old):
   1. HARD_STOP_DURING_HOLD     — pnl <= -(VIX-tiered hard stop)  → immediate exit
   2. EOD_HOLD_RISK_GATE        — pnl <= -(VIX-tiered EOD gate) at 15:45+, held >= 240m → exit
@@ -407,22 +447,34 @@ HOLD GUARD (if position < 1440 min old):
 MAIN CASCADE (after hold expired or bypassed):
   P0. VIX Spike Exit           — VIX >= 25 or 5D change >= 20%
   P1. Overlay Stress Exit      — regime stress state
-  P2. Overnight De-risk        — pre-close transition deterioration (V12.4)
+  P2. Overnight De-risk        — pre-close transition deterioration (V12.4; credit recovery derisk DISABLED V12.30)
   P3. MFE Lock Floor           — gave back gains past lock threshold
   P4. TAIL_RISK_CAP            — dollar loss >= 1.0% of portfolio equity (~$1,000)
+                                  (V12.31: gated to emergency windows in THETA_FIRST credit mode)
   P5. Day-4 EOD Decision       — close after 4 days if losing
-  P6. Profit Target            — regime-adaptive, commission-aware
+  P6. Profit Target            — regime-adaptive, commission-aware (V12.31: open-delay aware)
   P7. Trail Stop               — trail from high-water mark
   P8. Width Hard Stop           — % of spread width
   P9. PCT Hard Stop            — VIX-tiered hard stop %
   P10. Adaptive Stop (STOP_LOSS) — VIX-tiered + regime-multiplied + ATR-scaled
   P11. Time Stop               — max hold days (low VIX: shorter)
   P12. Regime Deterioration    — regime dropped 10+ pts while losing
-  P13. DTE Exit                — close by 5 DTE
-  P14. Neutrality Exit         — regime in dead zone (45-60) with flat P&L
+  P13. QQQ Invalidation (V12.25) — bull debit thesis-break when QQQ moves 3.9% against (V12.31: tuned from 4.0%)
+  P14. DTE Exit                — close by 5 DTE
+  P15. Neutrality Exit         — regime in dead zone (45-60) with flat P&L (V12.25: DISABLED)
 ```
 
 **Known issue (V12.4):** TAIL_RISK_CAP (P4) fires at ~19% of debit ($1,000 / $5,250 typical position), which is BEFORE the adaptive stop (P10) at 25%. The adaptive stop is effectively unreachable for current position sizing (15 contracts × ~$3.50 debit).
+
+### VASS Direction Resolution (V12.30)
+
+The VASS direction resolver was significantly reworked in V12.30:
+- **Macro-only mode** (V12.26): Direction comes from regime, not micro signals
+- **Neutral fallback** (V12.30): When macro returns NEUTRAL, infers BULLISH/BEARISH from transition-score delta (min 1.0pt, soft 0.5pt)
+- **Deep bear guard** (V12.30): When regime ≤ 45, BULLISH inference blocked to preserve BEAR_PUT pivot
+- **High-IV BEAR_PUT pivot** (V12.30): In high-IV bearish, prefers BEAR_PUT_DEBIT over BEAR_CALL_CREDIT; falls back to credit if no PUT candidates
+- **Assignment gate polarity** (V12.30): Enforces OTM gate in bull regimes, relaxes in bear (STRESS relax: score ≤ 45, VIX ≤ 30)
+- **Short direction memory** (V12.31): Soft neutral fallback with attempt-aware throttle to reduce resolver starvation
 
 ---
 
@@ -878,6 +930,9 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | VASS ATR Exit Scaling (V12.3) | 0.85x-1.25x | Multiply stops/targets by ATR ratio vs 1.5% ref |
 | VASS Loss Breaker | 3 consecutive | Pause VASS entries for 1 day after 3 consecutive losses |
 | VASS Overnight De-risk (V12.4) | 15:40 | Close bullish debit spreads pre-close on regime DETERIORATION/AMBIGUOUS |
+| VASS Profit Target Open Delay (V12.31) | 5 min | Defer profit-target exits during 09:30-09:34 to avoid open slippage |
+| VASS QQQ Invalidation Intraday (V12.31) | 3.9% | Bull debit thesis-break exit when QQQ moves against (was 4.0%) |
+| VASS Neutral Fallback Deep Bear Max (V12.30) | 45 | Block BULLISH inference from neutral fallback when regime ≤ this |
 | Choppy Market Filter (V6.10) | 3 reversals/2hr | 65% size reduction in choppy markets (V6.19) |
 | VIX Stable Band Low (V6.22) | +/-0.3% | STABLE band when VIX < 15 |
 | VIX Stable Band High (V8.2) | +/-0.8% | STABLE band when VIX > 25 |

@@ -7,27 +7,65 @@
 
 ## Metadata
 
-- Last updated: `2026-02-27 13:21:42 EST`
-- Repo commit baseline: `300eb48`
+- Last updated: `2026-03-09 11:15:00 EDT`
+- Repo commit baseline: `d7fa2c1`
 - Update rule: refresh both fields whenever architecture, workflows, or thresholds change materially.
 
-## Recent Work (V12.20)
+## Recent Work (V12.30-V12.32)
 
-- Commit `ca303c0`:
-  - Intraday software exits standardized to `OPT_INTRADAY`.
-  - Lane metadata added to exit signals (`options_lane`, `options_strategy`).
-  - Router `OPT` close fallback now infers ITM/MICRO from live symbol lane before defaulting.
-- Commit `300eb48`:
-  - Cancel/invalid handlers switched to `_get_order_tag(...)` for robust tag recovery.
-  - OCO cancel detection hardened to avoid false retry/escalation loops.
-  - Intraday snapshot tracking fixed for stacked fills (aggregate qty + blended entry).
-  - Close accounting path now uses snapshot-corrected quantity/entry where applicable.
+- Commit `ee5fb28`:
+  - Restored V12.24-style `BULL_CALL_DEBIT` exit geometry.
+  - Lowered confirmed debit profit target to `35%`.
+  - Disabled `BULL_CALL_DEBIT` thesis soft stop and kept tactical exits active.
+- Commits `23b99a0`, `6c5b0b9`, `812ec87`, `d6b449b`:
+  - Flipped `BEAR_PUT` short-put assignment gate polarity: enforce in `STRESS`, high-VIX, or bullish/neutral-high regime instead of deep-bear tape.
+  - Added explicit `ASSIGN_GATE_*` telemetry attribution.
+  - Preserved true-bear `STRESS` relax for both `BEAR_PUT_DEBIT` and `BULL_PUT_CREDIT` short-put paths.
+- Commits `56036af`, `1bfdfe5`, `9462ec5`, `4204b54`, `4c132d3`, `72d3180`, `f03b247`:
+  - Added neutral fallback VASS direction inference in macro-neutral tape, with deep-bear guard blocking bullish inference when regime is `<= 45`.
+  - Preferred `BEAR_PUT_DEBIT` over `BEAR_CALL_CREDIT` in high-IV bearish regimes, with fallback back to credit if the PUT candidate set is empty.
+  - Added BEAR credit stability gate based on persisted overlay state / bars-since-flip continuity across algorithm restarts.
+  - Disabled `RECOVERY`-overlay transition de-risk for VASS credit spreads to avoid premature bearish credit exits.
+- Commits `5028e7b`, `658d232`:
+  - Made VASS scan throttling attempt-aware so interval budget is consumed only after candidate-evaluation work begins.
+  - Added softer neutral fallback delta tier (`0.5`) plus short-lived direction memory (`120m`) to reduce VASS resolver starvation.
+- Commits `6b59133`, `d61bd19`, `ac1acf2`, `480d1e6`, `a532cb5`, `1a4bf36`, `2502a96`, `1e5b558`:
+  - Hardened RCA observability artifacts: stable empty-schema flushes, deterministic `incident_id`, `spread_key` correlation, tag/trace backfill from caches, and `tag_origin` attribution.
+  - Added lifecycle diagnostic counters for retry / invalid / preclear / reconcile paths.
+  - Expanded offline exit-reason normalization and made QC Research ObjectStore loading tolerant of empty artifacts plus schema backfill.
+- Commits `2d634e5`, `68a84ac`, `04b73a9`, `cacc53d`:
+  - Added adaptive insufficient-buying-power retry sizing from broker free-margin / maintenance-delta telemetry, with one immediate reduced-size retry and short cooldown thereafter.
+  - Added a 5-minute open-delay gate for VASS profit-target exits to avoid opening-book fills.
+  - Tuned `BULL_CALL_DEBIT` intraday QQQ invalidation threshold from `4.0%` to `3.9%`.
+  - Gated credit `THETA_FIRST` tail-cap exits to emergency windows only.
+- Commits `b84e56e`, `7ef1515`, `a28c46d`, `db35600`, `e8f0ca0`, `71c64e6`, `f2c5a01`:
+  - Skipped fresh-trade OGP for `BEAR_CALL_CREDIT` / `BEAR_PUT_DEBIT` when regime is already bearish, while preserving the global `close_all` rail.
+  - Forced `BEAR_PUT` / `BEAR_PUT_DEBIT` profit-target eligibility to use tradeable spread value instead of intrinsic-overridden valuation.
+  - Biased `BEAR_PUT` width target/min one strike wider and modestly relaxed bearish-put debit-to-width caps within the existing selector/validator helpers.
+  - Raised the bear-regime `close_all` OGP threshold to `40.0` for `BEAR_PUT` / `BEAR_PUT_DEBIT`, without changing any other spread path.
+  - Forced `BEAR_PUT` / `BEAR_PUT_DEBIT` MFE-lock and trail evaluation to use tradeable spread value so intrinsic override no longer arms early non-profit exits.
+  - Removed `MARGIN_BUFFER_INSUFFICIENT` forced exits for debit spreads and narrowed the margin-buffer guard to near-expiry ITM credit spreads only.
+  - Scoped spread-close cancel counting by ladder phase so `LIMIT -> COMBO_MARKET` gets its own retry budget before any sequential fallback.
+- Commit `d7fa2c1`:
+  - Scoped the hard `VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY` gate to only the first two `RECOVERY` bars after an overlay flip.
+  - Preserved `AMBIGUOUS` and bullish-deterioration transition blocks.
+  - Let later bearish `RECOVERY` entries fall through to the existing handoff throttle instead of staying hard-blocked.
 
-Known V12.19 failures addressed:
-- ITM closes mislabeled as MICRO retry tags.
-- Missing close tag attribution on canceled/invalid callbacks.
-- Stacked-fill quantity/accounting drift (buy N + buy N then close 2N).
-- Retry/exhausted churn from OCO cancel misclassification.
+Known V12.30/V12.31 issues addressed:
+- VASS resolver starvation in macro-neutral tape due to hard-only direction inference.
+- Over-blocking of bearish debit access from legacy deep-bear assignment gating.
+- Premature `RECOVERY` de-risk exits on bearish credit spreads.
+- Router/order observability gaps when artifacts were empty or tags/traces had to be reconstructed.
+- Repeated spread rejection churn after broker insufficient-buying-power responses.
+- Early-session profit-target exits hitting unstable opening quotes.
+- Bear-regime bearish spreads being force-closed the same day by blunt fresh-trade OGP.
+- Multi-day `BEAR_PUT` holds being truncated by the generic `VIX >= 30` OGP close-all rail during bear regimes.
+- Phantom `BEAR_PUT` profit-target exits caused by intrinsic override on put spreads with high remaining extrinsic value.
+- Ultra-narrow `BEAR_PUT` spread selection under skew compressing realized spread value.
+- `BEAR_PUT` MFE-lock / trail state being armed by intrinsic-inflated spread value instead of tradeable mark.
+- Debit spreads being force-closed by the generic assignment margin-buffer policy despite no credible assignment-danger window.
+- Combo-market close retries inheriting prior limit-phase cancel count and jumping straight to sequential fallback.
+- Bearish VASS entries staying hard-blocked for the full `RECOVERY` overlay instead of only the immediate flip window.
 
 ## Project Summary
 
@@ -37,7 +75,7 @@ Known V12.19 failures addressed:
 - **Satellite (50%)**: Options Engine — VASS swing spreads, Micro intraday, ITM momentum on QQQ
 - **Satellite (10%)**: Mean Reversion — RSI oversold on TQQQ, SPXL, SOXL
 
-**Current version**: V12.20 (working branch). **Main branch**: `develop`. **Python**: 3.11.
+**Current version**: V12.32 (working branch). **Main branch**: `develop`. **Python**: 3.11.
 
 ---
 

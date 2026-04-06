@@ -238,10 +238,19 @@ def _pick_col(df: pd.DataFrame, names: List[str]) -> Optional[str]:
 
 
 def _row_text(df: pd.DataFrame) -> pd.Series:
+    if df.empty:
+        return pd.Series(dtype=str)
     cols = [c for c in df.columns if str(df[c].dtype) == "object"]
     if not cols:
         cols = list(df.columns)
-    return df[cols].astype(str).agg(" | ".join, axis=1).str.upper()
+    if not cols:
+        return pd.Series([""] * len(df), index=df.index)
+    result = df[cols].astype(str).agg(" | ".join, axis=1)
+    if isinstance(result, pd.DataFrame):
+        result = (
+            result.iloc[:, 0] if result.shape[1] > 0 else pd.Series([""] * len(df), index=df.index)
+        )
+    return result.str.upper()
 
 
 def load_objectstore_artifacts(
@@ -395,8 +404,10 @@ def summarize_vass_overlay_and_exit_plumbing(loaded: Dict[str, pd.DataFrame]) ->
         print("VASS events by overlay:")
         print(ctab)
 
-    if order_df is None or router_df is None:
-        print("Skipped exit plumbing summary: missing order_lifecycle or router_rejections")
+    if order_df is None or router_df is None or order_df.empty or router_df.empty:
+        print(
+            "Skipped exit plumbing summary: missing or empty order_lifecycle or router_rejections"
+        )
         return
 
     cat_pattern = r"VASS_TAIL_RISK_CAP|SPREAD_HARD_STOP_DURING_HOLD|TAIL_RISK_CAP|HARD_STOP"
