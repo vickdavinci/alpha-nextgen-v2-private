@@ -25,6 +25,7 @@ RUN_NAME = "V12.4-JulSep2024-R2"
 BACKTEST_YEAR = 2024
 MAX_LEGACY_PARTS = 64
 JOIN_TOLERANCE_HOURS = 6
+REQUIRE_EXACT_RUN_KEYS = False
 
 ARTIFACT_PREFIXES = {
     "regime_decisions": "regime_observability",
@@ -113,6 +114,16 @@ def _base_key_candidates(prefix: str, run_name: str, backtest_year: int) -> List
     return out
 
 
+def _fallback_key_candidates(prefix: str, backtest_year: int) -> List[str]:
+    """Return non-run-pinned fallback keys for diagnostics only."""
+    year = _safe_key_component(backtest_year, "year")
+    return [
+        f"{prefix}__year_{year}_{year}.csv",
+        f"{prefix}__DEFAULT_{year}.csv",
+        f"{prefix}__default_{year}.csv",
+    ]
+
+
 def _key_candidates(key: str) -> List[str]:
     base = str(key or "").lstrip("/")
     out: List[str] = []
@@ -130,6 +141,10 @@ def _read_text_from_store(qb: QuantBook, key: str) -> Tuple[Optional[str], Optio
                 payload = payload.decode("utf-8", errors="ignore")
             return candidate, str(payload or "")
     return None, None
+
+
+def _key_exists(qb: QuantBook, key: str) -> bool:
+    return any(qb.object_store.contains_key(candidate) for candidate in _key_candidates(key))
 
 
 def _manifest_key(base_key: str) -> str:
@@ -247,6 +262,7 @@ def _row_text(df: pd.DataFrame) -> pd.Series:
 def load_objectstore_artifacts(
     run_name: str = RUN_NAME,
     backtest_year: int = BACKTEST_YEAR,
+    require_exact_run_keys: bool = REQUIRE_EXACT_RUN_KEYS,
 ) -> Tuple[QuantBook, Dict[str, pd.DataFrame], Dict[str, Dict[str, Any]]]:
     qb = QuantBook()
 
@@ -258,7 +274,15 @@ def load_objectstore_artifacts(
         last_error: Optional[str] = None
         found = False
         expected_columns = EXPECTED_ARTIFACT_COLUMNS.get(label, [])
-        for key in _base_key_candidates(prefix, run_name, backtest_year):
+        exact_key = _base_key(prefix, run_name, backtest_year)
+        fallback_keys = _fallback_key_candidates(prefix, backtest_year)
+        fallback_present = [key for key in fallback_keys if _key_exists(qb, key)]
+        if require_exact_run_keys:
+            candidate_keys = [exact_key]
+        else:
+            candidate_keys = _base_key_candidates(prefix, run_name, backtest_year)
+
+        for key in candidate_keys:
             attempted_keys.append(key)
             try:
                 df, info = _read_csv_artifact(qb, key, expected_columns=expected_columns)
@@ -272,17 +296,24 @@ def load_objectstore_artifacts(
                         missing_cols.append(col)
                 loaded[label] = _parse_time_column(df)
                 metadata[label] = {
+                    "require_exact_run_keys": require_exact_run_keys,
+                    "exact_key": exact_key,
+                    "exact_key_found": key == exact_key,
+                    "fallback_keys_present": fallback_present,
                     "base_key": key,
                     "attempted_keys": attempted_keys,
                     **info,
                     "rows": int(len(df)),
                     "schema_missing_columns": missing_cols,
                 }
+                fallback_hint = (
+                    f" | fallbacks_present={fallback_present}" if fallback_present else ""
+                )
                 missing_hint = f" | schema_backfill={missing_cols}" if missing_cols else ""
                 empty_hint = " | empty_artifact=True" if bool(info.get("empty_artifact")) else ""
                 print(
                     f"[OK] {label}: rows={len(df)} | key={info['key']} | mode={info['mode']} | base={key}"
-                    f"{empty_hint}{missing_hint}"
+                    f"{empty_hint}{missing_hint}{fallback_hint}"
                 )
                 found = True
                 break
@@ -290,13 +321,18 @@ def load_objectstore_artifacts(
                 last_error = str(err)
         if not found:
             metadata[label] = {
+                "require_exact_run_keys": require_exact_run_keys,
+                "exact_key": exact_key,
+                "exact_key_found": False,
+                "fallback_keys_present": fallback_present,
                 "base_key": attempted_keys[0]
                 if attempted_keys
                 else _base_key(prefix, run_name, backtest_year),
                 "attempted_keys": attempted_keys,
                 "error": last_error or "unknown error",
             }
-            print(f"[MISS] {label}: {last_error} | attempted={attempted_keys}")
+            fallback_hint = f" | fallbacks_present={fallback_present}" if fallback_present else ""
+            print(f"[MISS] {label}: {last_error} | attempted={attempted_keys}{fallback_hint}")
     return qb, loaded, metadata
 
 
@@ -588,6 +624,13 @@ def summarize_every_run_checklist(
                 f"[READY] {key}: rows={info.get('rows', 0)} | "
                 f"mode={info.get('mode', 'unknown')} | key={info.get('key', info.get('base_key', ''))}"
             )
+        exact_key = info.get("exact_key")
+        if exact_key:
+            print(
+                f"        exact_key={exact_key} | exact_found={info.get('exact_key_found', False)}"
+            )
+            if info.get("fallback_keys_present"):
+                print(f"        fallback_keys_present={info.get('fallback_keys_present')}")
 
     print("\nRequired analysis blocks per run:")
     print("1) Detector/Handoff health: overlay flips + STABLE/DETERIORATION/RECOVERY mix.")
@@ -603,10 +646,16 @@ def summarize_every_run_checklist(
 def run(
     run_name: str = RUN_NAME,
     backtest_year: int = BACKTEST_YEAR,
+    require_exact_run_keys: bool = REQUIRE_EXACT_RUN_KEYS,
 ) -> Tuple[QuantBook, Dict[str, pd.DataFrame], Dict[str, Dict[str, Any]]]:
-    print(f"Starting ObjectStore load | run_name={run_name} | backtest_year={backtest_year}")
+    print(
+        f"Starting ObjectStore load | run_name={run_name} | backtest_year={backtest_year} "
+        f"| require_exact_run_keys={require_exact_run_keys}"
+    )
     qb, loaded, metadata = load_objectstore_artifacts(
-        run_name=run_name, backtest_year=backtest_year
+        run_name=run_name,
+        backtest_year=backtest_year,
+        require_exact_run_keys=require_exact_run_keys,
     )
     print("\n=== Load Metadata ===")
     print(json.dumps(metadata, indent=2, default=str))
